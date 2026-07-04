@@ -56,6 +56,16 @@ type BroadcastCreateParams struct {
 	// "language": ..., "variables": {...}}.
 	WhatsAppTemplate map[string]any
 
+	// SendAt schedules the broadcast for a future moment, serialized
+	// ISO-8601 with the value's own UTC offset (a time.Time always
+	// carries one). Server rules: strictly in the future, at most 90 days
+	// ahead — otherwise a 422 slug "send-at-invalid". The envelope
+	// answers status "scheduled" and its ID is stable through dispatch;
+	// cancel while still scheduled via BroadcastsService.Cancel. A
+	// pre-formatted ISO-8601 string can be passed via
+	// ExtraBody["send_at"] instead.
+	SendAt *time.Time
+
 	// IdempotencyKey is sent as the Idempotency-Key header. When empty, a
 	// UUIDv4 is generated — the header is ALWAYS sent, and the same value
 	// is replayed on every retry attempt, so a retry can never double-send.
@@ -101,6 +111,9 @@ func (p BroadcastCreateParams) body() map[string]any {
 	if p.WhatsAppTemplate != nil {
 		body["whatsapp_template"] = p.WhatsAppTemplate
 	}
+	if p.SendAt != nil {
+		body["send_at"] = p.SendAt.Format(time.RFC3339Nano)
+	}
 	for k, v := range p.ExtraBody {
 		body[k] = v
 	}
@@ -120,13 +133,19 @@ type BroadcastAccepted struct {
 	Livemode bool `json:"livemode"`
 
 	Channel string `json:"channel"`
-	Status  string `json:"status"`
 
-	// TargetCount is the number of recipients targeted.
+	// Status is "queued", "scheduled" when the request carried SendAt,
+	// or "canceled" on the envelope returned by Cancel.
+	Status string `json:"status"`
+
+	// TargetCount is the number of recipients targeted. The server may
+	// report null (decoded as 0) on a scheduled envelope when the channel
+	// resolves its audience at dispatch time.
 	TargetCount int `json:"target_count"`
 
 	// SkippedCount is the number of recipients skipped (duplicates,
-	// unsubscribed, unreachable).
+	// unsubscribed, unreachable). Like TargetCount, null (decoded as 0)
+	// on a scheduled envelope until the audience resolves at dispatch.
 	SkippedCount int `json:"skipped_count"`
 }
 
@@ -163,8 +182,16 @@ type Broadcast struct {
 	// queued; nil while the broadcast is still in progress.
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 
-	// Status is "completed" once nothing is queued, otherwise "in_progress".
+	// Status is "scheduled" before a SendAt broadcast dispatches
+	// ("canceled" after a successful Cancel); once dispatched,
+	// "completed" when nothing is queued, otherwise "in_progress"
+	// ("failed" when a scheduled dispatch faulted before any recipient
+	// row was created — such a broadcast never went out).
 	Status string `json:"status"`
+
+	// SendAt (scheduled broadcasts only) is when the broadcast will
+	// dispatch.
+	SendAt *time.Time `json:"send_at,omitempty"`
 }
 
 // BroadcastDelivery is one per-recipient delivery row for a broadcast.
@@ -228,10 +255,30 @@ func (s *BroadcastsService) Create(ctx context.Context, params BroadcastCreatePa
 }
 
 // Retrieve fetches aggregate delivery counts for a broadcast
-// (GET /api/v1/broadcasts/{broadcast_id}/).
+// (GET /api/v1/broadcasts/{broadcast_id}/). The id resolves before AND
+// after a scheduled dispatch: Status reads "scheduled", then the normal
+// lifecycle.
 func (s *BroadcastsService) Retrieve(ctx context.Context, broadcastID string) (*Broadcast, error) {
 	var out Broadcast
 	if err := s.client.get(ctx, broadcastsPath+url.PathEscape(broadcastID)+"/", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Cancel cancels a broadcast that was created with SendAt and is still
+// "scheduled" (POST /api/v1/broadcasts/{broadcast_id}/cancel/, 200). The
+// returned envelope shows status "canceled"; a canceled broadcast never
+// dispatches and emits a broadcast.canceled event (livemode-aware).
+//
+// Cancel is idempotent by nature and sends NO Idempotency-Key: canceling
+// an already-canceled broadcast answers the same 200 envelope again (no
+// second event). Once dispatched (or for an immediate broadcast's id) the
+// server answers 409 slug "not-cancellable"; an unknown id is a 404.
+// Requires the broadcasts:send scope.
+func (s *BroadcastsService) Cancel(ctx context.Context, broadcastID string) (*BroadcastAccepted, error) {
+	var out BroadcastAccepted
+	if err := s.client.post(ctx, broadcastsPath+url.PathEscape(broadcastID)+"/cancel/", nil, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

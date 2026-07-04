@@ -3,6 +3,7 @@ package silon
 import (
 	crand "crypto/rand"
 	"fmt"
+	"time"
 )
 
 // newUUID returns a random (version 4, variant 1) UUID string, used for
@@ -29,3 +30,6 @@ func Bool(v bool) *bool { return &v }
 
 // Float returns a pointer to v, for optional float64 params.
 func Float(v float64) *float64 { return &v }
+
+// Time returns a pointer to v, for optional time.Time params (e.g. SendAt).
+func Time(v time.Time) *time.Time { return &v }

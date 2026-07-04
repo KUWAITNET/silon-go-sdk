@@ -3,6 +3,7 @@ package silon
 import (
 	"context"
 	"net/url"
+	"time"
 )
 
 const (
@@ -54,6 +55,15 @@ type MessageSendParams struct {
 	// WhatsAppTemplate selects a WhatsApp template, e.g. {"name": ...,
 	// "language": ..., "variables": {...}}.
 	WhatsAppTemplate map[string]any
+
+	// SendAt schedules the send for a future moment, serialized ISO-8601
+	// with the value's own UTC offset (a time.Time always carries one).
+	// Server rules: strictly in the future, at most 90 days ahead —
+	// otherwise a 422 slug "send-at-invalid". The envelope answers status
+	// "scheduled" and its ID is stable through dispatch; cancel while
+	// still scheduled via MessagesService.Cancel. A pre-formatted
+	// ISO-8601 string can be passed via ExtraBody["send_at"] instead.
+	SendAt *time.Time
 
 	// IdempotencyKey is sent as the Idempotency-Key header. When empty, a
 	// UUIDv4 is generated — the header is ALWAYS sent, and the same value
@@ -107,6 +117,9 @@ func (p MessageSendParams) body() (map[string]any, error) {
 	}
 	if p.WhatsAppTemplate != nil {
 		body["whatsapp_template"] = p.WhatsAppTemplate
+	}
+	if p.SendAt != nil {
+		body["send_at"] = p.SendAt.Format(time.RFC3339Nano)
 	}
 	for k, v := range p.ExtraBody {
 		body[k] = v
@@ -166,6 +179,16 @@ type MessageBatchParams struct {
 	// {"name": ..., "language": ..., "variables": {...}}.
 	WhatsAppTemplate map[string]any
 
+	// SendAt schedules the batch — FILE form only — serialized ISO-8601
+	// with the value's own UTC offset (a time.Time always carries one).
+	// Server rules: strictly in the future, at most 90 days ahead —
+	// otherwise a 422 slug "send-at-invalid". The envelope answers status
+	// "scheduled"; rows expand and send at dispatch time. With inline
+	// Messages the server rejects it with a 422 slug "batch-invalid" (no
+	// batch cancel resource exists by design — schedule rows individually
+	// via MessagesService.Send, which supports per-message Cancel).
+	SendAt *time.Time
+
 	// IdempotencyKey is sent as the Idempotency-Key header. When empty, a
 	// UUIDv4 is generated — the header is ALWAYS sent, and the same value
 	// is replayed on every retry attempt, so a retry can never double-send.
@@ -222,6 +245,9 @@ func (p MessageBatchParams) body() (map[string]any, error) {
 	if p.WhatsAppTemplate != nil {
 		body["whatsapp_template"] = p.WhatsAppTemplate
 	}
+	if p.SendAt != nil {
+		body["send_at"] = p.SendAt.Format(time.RFC3339Nano)
+	}
 	for k, v := range p.ExtraBody {
 		body[k] = v
 	}
@@ -256,8 +282,9 @@ type BatchAccepted struct {
 	// key): no row reaches a provider and nothing is billed.
 	Livemode bool `json:"livemode"`
 
-	// Status is the aggregate batch status ("queued") on the file form;
-	// empty on the inline form.
+	// Status is the aggregate batch status on the file form ("queued",
+	// or "scheduled" when the request carried SendAt); empty on the
+	// inline form.
 	Status string `json:"status,omitempty"`
 
 	// RowCount (file form only) is the CSV's data-row count, present
@@ -284,9 +311,14 @@ type MessageAccepted struct {
 	Livemode bool `json:"livemode"`
 
 	Channel string `json:"channel"`
-	Status  string `json:"status"`
 
-	// TargetCount (broadcast only) is the number of recipients targeted.
+	// Status is "queued", "scheduled" when the request carried SendAt,
+	// or "canceled" on the envelope returned by Cancel.
+	Status string `json:"status"`
+
+	// TargetCount (broadcast only) is the number of recipients targeted;
+	// nil on a scheduled envelope when the channel resolves its audience
+	// at dispatch time.
 	TargetCount *int `json:"target_count,omitempty"`
 
 	// SkippedCount (broadcast only) is the number of recipients skipped
@@ -312,6 +344,15 @@ type MessageStatus struct {
 	// key) — its status transitions are simulated. Nil when the server
 	// does not report a mode.
 	Livemode *bool `json:"livemode,omitempty"`
+
+	// Status is the aggregate lifecycle status: "scheduled" before a
+	// SendAt message dispatches ("canceled" after a successful Cancel),
+	// then "queued" while any row is in flight, then "sent" ("failed"
+	// when every row failed).
+	Status string `json:"status,omitempty"`
+
+	// SendAt (scheduled sends only) is when the send will dispatch.
+	SendAt *time.Time `json:"send_at,omitempty"`
 
 	Messages []MessageStatusItem `json:"messages"`
 }
@@ -389,10 +430,30 @@ func (s *MessagesService) SendBatch(ctx context.Context, params MessageBatchPara
 }
 
 // Retrieve looks up a queued/sent message batch by its tracking id
-// (GET /api/v1/messages/{event_id}/).
+// (GET /api/v1/messages/{event_id}/). The id resolves before AND after a
+// scheduled dispatch: Status reads "scheduled", then the normal lifecycle.
 func (s *MessagesService) Retrieve(ctx context.Context, eventID string) (*MessageStatus, error) {
 	var out MessageStatus
 	if err := s.client.get(ctx, messagesPath+url.PathEscape(eventID)+"/", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Cancel cancels a message that was created with SendAt and is still
+// "scheduled" (POST /api/v1/messages/{event_id}/cancel/, 200) — eventID is
+// the ID from the create envelope. The returned envelope shows status
+// "canceled"; a canceled send never dispatches and emits a
+// message.canceled event (livemode-aware).
+//
+// Cancel is idempotent by nature and sends NO Idempotency-Key: canceling
+// an already-canceled message answers the same 200 envelope again (no
+// second event). Once dispatched (or for an immediate send's id) the
+// server answers 409 slug "not-cancellable"; an unknown id is a 404.
+// Requires the messages:send scope.
+func (s *MessagesService) Cancel(ctx context.Context, eventID string) (*MessageAccepted, error) {
+	var out MessageAccepted
+	if err := s.client.post(ctx, messagesPath+url.PathEscape(eventID)+"/cancel/", nil, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

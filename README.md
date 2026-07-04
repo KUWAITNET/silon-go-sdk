@@ -169,8 +169,64 @@ unless you set `IdempotencyKey`), so automatic retries can never
 double-send.
 
 Optional scalar params are pointers — use the helpers `silon.String`,
-`silon.Int`, `silon.Bool`, `silon.Float`. Fields this SDK version does not
-model can be passed via `ExtraBody`, merged into the request body last.
+`silon.Int`, `silon.Bool`, `silon.Float`, `silon.Time`. Fields this SDK
+version does not model can be passed via `ExtraBody`, merged into the
+request body last.
+
+## Scheduling and cancellation
+
+`Messages.Send`, `Broadcasts.Create`, and the *file* form of
+`Messages.SendBatch` take an optional `SendAt` (`*time.Time`, serialized
+ISO-8601 with the value's own UTC offset). The server requires it to be
+strictly in the future and at most 90 days ahead — otherwise a 422
+`send-at-invalid`. A scheduled create answers the normal `202` envelope
+with status `"scheduled"`:
+
+```go
+sent, err := client.Messages.Send(ctx, silon.MessageSendParams{
+    Channel: "sms",
+    To:      map[string]any{"phone_number": "+96550001234"},
+    Content: map[string]any{"body": "Doors open in one hour."},
+    SendAt:  silon.Time(time.Now().Add(24 * time.Hour)),
+})
+fmt.Println(sent.Status) // "scheduled"
+```
+
+The envelope `ID` is stable across the lifecycle — it resolves via
+`Messages.Retrieve` / `Broadcasts.Retrieve` before *and* after dispatch
+(`scheduled`, then the normal queued/sent lifecycle; the status endpoints
+also report `SendAt`). While a send is still scheduled, cancel it:
+
+```go
+canceled, err := client.Messages.Cancel(ctx, sent.ID)
+fmt.Println(canceled.Status) // "canceled"
+
+// Same shape for broadcasts:
+canceled2, err := client.Broadcasts.Cancel(ctx, broadcast.ID)
+```
+
+A canceled send never dispatches and emits a `message.canceled` /
+`broadcast.canceled` event. Cancel is idempotent by nature and sends no
+`Idempotency-Key`: canceling an already-canceled send answers the same
+`200` envelope again (no second event). Once dispatched (or for an
+immediate send's id) the server answers a 409 `not-cancellable`; an
+unknown id is a 404.
+
+Notes:
+
+- `SendAt` with *inline* batch rows is rejected with a 422 `batch-invalid`
+  (no batch cancel resource exists by design) — schedule rows individually
+  via `Messages.Send`, or use the file form (rows expand and send at
+  dispatch time; the file-form envelope answers `"scheduled"`).
+- Scheduled creates stay always-keyed, exactly like immediate ones — an
+  idempotent replay returns the scheduled envelope.
+- On a scheduled broadcast envelope, `TargetCount` / `SkippedCount` may be
+  null (decoded as `0`) until the audience resolves at dispatch time.
+- Statuses: `scheduled` and `canceled` join the documented sets — message
+  `scheduled|queued|sent|failed|canceled`, broadcast
+  `scheduled|in_progress|completed|failed|canceled`.
+- Test-mode (`sk_test_`) scheduled sends simulate on dispatch, like any
+  other test-mode traffic.
 
 ## Test mode
 
@@ -231,8 +287,8 @@ endpoint, err := client.WebhookEndpoints.Create(ctx, silon.WebhookEndpointCreate
 
 | Resource | Methods |
 | --- | --- |
-| `client.Messages` | `Send`, `SendBatch`, `Retrieve` |
-| `client.Broadcasts` | `Create`, `Retrieve`, `Deliveries` (paginated) |
+| `client.Messages` | `Send`, `SendBatch`, `Retrieve`, `Cancel` |
+| `client.Broadcasts` | `Create`, `Retrieve`, `Deliveries` (paginated), `Cancel` |
 | `client.OTP` | `Send`, `Verify` |
 | `client.Clients` | `List`, `Create`, `Retrieve`, `Update`, `Replace`, `Delete` |
 | `client.ClientGroups` | `List`, `Create`, `Retrieve`, `Update`, `Replace`, `Delete` |
