@@ -116,12 +116,15 @@ func (p MessageSendParams) body() (map[string]any, error) {
 
 // MessageBatchParams are the parameters for MessagesService.SendBatch.
 //
-// Messages is required. All other fields are optional; nil fields are
-// omitted from the request JSON. Fields not covered here can be passed via
-// ExtraBody, which is merged into the body last (overriding on key
-// collision).
+// Exactly one of Messages (inline rows) or File (a saved CSV name from
+// BulkFilesService.Upload) is required. All other fields are optional row
+// DEFAULTS — applied to every row (or CSV column) that does not carry its
+// own value; a row value always wins (row value > request default > none).
+// Nil fields are omitted from the request JSON. Fields not covered here
+// can be passed via ExtraBody, which is merged into the body last
+// (overriding on key collision).
 type MessageBatchParams struct {
-	// Messages is required: 1-500 free-form rows, each the same shape as
+	// Messages holds 1-500 inline free-form rows, each the same shape as
 	// a MessageSendParams body minus Audience (rows are single-recipient
 	// by definition — a row carrying "audience" fails the batch with a
 	// per-index 422 pointing at POST /api/v1/broadcasts/). "to" is
@@ -131,10 +134,37 @@ type MessageBatchParams struct {
 	// same as on a single send. Rows are sent verbatim.
 	Messages []map[string]any
 
-	// Channel is the optional top-level default channel applied to rows
-	// that do not carry their own: "sms", "whatsapp", "email", "push",
-	// "web_push", ...
+	// File is the saved server-side CSV name returned by
+	// BulkFilesService.Upload (POST /api/v1/bulk/files/). Rows expand
+	// asynchronously through the bulk pipeline; the request-level
+	// defaults below apply to every CSV row that lacks its own column.
+	// An unknown name is a 404 slug "file-not-found".
+	File *string
+
+	// Channel is the default channel applied to rows that do not carry
+	// their own: "sms", "whatsapp", "email", "push", "web_push", ...
 	Channel *string
+
+	// Content is the default message content, e.g. {"body": ...} and,
+	// for email, {"subject": ...}.
+	Content map[string]any
+
+	// Template is the default stored-message-template reference.
+	Template map[string]any
+
+	Provider    *string
+	Sender      *string
+	Application *string
+	WidgetKey   *string
+	Priority    *string
+	TTL         *int
+
+	// WhatsApp holds default channel-specific options for WhatsApp rows.
+	WhatsApp map[string]any
+
+	// WhatsAppTemplate is the default WhatsApp template selector, e.g.
+	// {"name": ..., "language": ..., "variables": {...}}.
+	WhatsAppTemplate map[string]any
 
 	// IdempotencyKey is sent as the Idempotency-Key header. When empty, a
 	// UUIDv4 is generated — the header is ALWAYS sent, and the same value
@@ -146,15 +176,56 @@ type MessageBatchParams struct {
 	ExtraBody map[string]any
 }
 
-func (p MessageBatchParams) body() map[string]any {
-	body := map[string]any{"messages": p.Messages}
+func (p MessageBatchParams) body() (map[string]any, error) {
+	if (p.Messages == nil) == (p.File == nil) {
+		return nil, &Error{
+			Message: "Provide exactly one of 'messages' (inline rows) or 'file' (a saved CSV name from Bulk.Files.Upload).",
+		}
+	}
+	body := map[string]any{}
+	if p.Messages != nil {
+		body["messages"] = p.Messages
+	}
+	if p.File != nil {
+		body["file"] = *p.File
+	}
 	if p.Channel != nil {
 		body["channel"] = *p.Channel
+	}
+	if p.Content != nil {
+		body["content"] = p.Content
+	}
+	if p.Template != nil {
+		body["template"] = p.Template
+	}
+	if p.Provider != nil {
+		body["provider"] = *p.Provider
+	}
+	if p.Sender != nil {
+		body["sender"] = *p.Sender
+	}
+	if p.Application != nil {
+		body["application"] = *p.Application
+	}
+	if p.WidgetKey != nil {
+		body["widget_key"] = *p.WidgetKey
+	}
+	if p.Priority != nil {
+		body["priority"] = *p.Priority
+	}
+	if p.TTL != nil {
+		body["ttl"] = *p.TTL
+	}
+	if p.WhatsApp != nil {
+		body["whatsapp"] = p.WhatsApp
+	}
+	if p.WhatsAppTemplate != nil {
+		body["whatsapp_template"] = p.WhatsAppTemplate
 	}
 	for k, v := range p.ExtraBody {
 		body[k] = v
 	}
-	return body
+	return body, nil
 }
 
 // BatchMessage is one per-row envelope inside BatchAccepted.
@@ -172,15 +243,27 @@ type BatchMessage struct {
 
 // BatchAccepted is the 202 envelope from POST /api/v1/messages/batch/.
 type BatchAccepted struct {
-	// ID is the batch id. It identifies the accepted request; batches
-	// have no GET endpoint.
+	// ID is the batch id. On the inline form it identifies the accepted
+	// request (inline batches have no GET endpoint); on the file form it
+	// IS the created bulk batch id — per-row status reads via
+	// GET /api/v1/bulk/{id}/ (BulkService.Retrieve) and the bulk reports.
 	ID string `json:"id"`
 
 	// Object is "batch".
 	Object string `json:"object"`
 
-	// Messages holds the per-row envelopes, in request order.
-	Messages []BatchMessage `json:"messages"`
+	// Status is the aggregate batch status ("queued") on the file form;
+	// empty on the inline form.
+	Status string `json:"status,omitempty"`
+
+	// RowCount (file form only) is the CSV's data-row count, present
+	// only when cheaply known.
+	RowCount *int `json:"row_count,omitempty"`
+
+	// Messages holds the per-row envelopes, in request order. It is set
+	// on the inline form only — nil on the file form, where rows expand
+	// asynchronously through the bulk pipeline.
+	Messages []BatchMessage `json:"messages,omitempty"`
 }
 
 // MessageAccepted is the 202 envelope from POST /api/v1/messages/.
@@ -242,28 +325,49 @@ func (s *MessagesService) Send(ctx context.Context, params MessageSendParams) (*
 	return &out, nil
 }
 
-// SendBatch sends up to 500 independent, personalised messages in one call
+// SendBatch sends many independent, personalised messages in one call
 // (POST /api/v1/messages/batch/, 202). Use it when every recipient gets
 // different content; for one content fanned out to an audience, use
 // BroadcastsService.Create.
 //
-// Validation is all-or-nothing: the server validates every row through the
-// same per-channel rules as Send before anything is queued, and any invalid
-// row fails the whole batch with a 422 whose Attr carries a per-index path
-// (e.g. "messages[3].to.phone_number"). An empty list is a 422 slug
-// "batch-empty"; more than 500 rows is a 422 slug "batch-too-large".
+// Exactly one of params.Messages (up to 500 inline rows) or params.File
+// (a saved CSV name from BulkFilesService.Upload) is required — a
+// client-side *Error is returned otherwise (the server answers neither/
+// both with a 422 slug "batch-invalid"). Request-level fields (Channel,
+// Content, Template, ...) act as row defaults on both forms; a row field
+// or CSV column always wins.
+//
+// Inline form: validation is all-or-nothing — the server validates every
+// row through the same per-channel rules as Send before anything is
+// queued, and any invalid row fails the whole batch with a 422 whose Attr
+// carries a per-index path (e.g. "messages[3].to.phone_number"). An empty
+// list is a 422 slug "batch-empty"; more than 500 rows is a 422 slug
+// "batch-too-large". The 202 carries per-row envelopes in Messages, each
+// id individually pollable via Retrieve.
+//
+// File form: rows expand asynchronously through the bulk pipeline, so the
+// 202 is the aggregate envelope only — Messages is nil, Status is
+// "queued", and the batch ID is the created bulk batch id (per-row status
+// via BulkService.Retrieve and the bulk reports). An unknown file name is
+// a 404 slug "file-not-found"; defaults the bulk pipeline cannot honor
+// are rejected with a 422 slug "batch-invalid".
 //
 // An Idempotency-Key header is always sent (auto-generated UUIDv4 when
 // params.IdempotencyKey is empty), which makes automatic retries safe —
-// a replay returns the same body including identical per-row ids.
+// a replay returns the stored body: identical per-row ids on the inline
+// form, the stored aggregate envelope on the file form.
 // Requires the messages:send scope.
 func (s *MessagesService) SendBatch(ctx context.Context, params MessageBatchParams) (*BatchAccepted, error) {
+	body, err := params.body()
+	if err != nil {
+		return nil, err
+	}
 	key := params.IdempotencyKey
 	if key == "" {
 		key = newUUID()
 	}
 	var out BatchAccepted
-	if err := s.client.post(ctx, messagesBatchPath, params.body(),
+	if err := s.client.post(ctx, messagesBatchPath, body,
 		map[string]string{"Idempotency-Key": key}, &out); err != nil {
 		return nil, err
 	}

@@ -451,6 +451,125 @@ func TestSendBatch422ProblemDecodes(t *testing.T) {
 	}
 }
 
+func TestSendBatchRequiresExactlyOneSource(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBatch)))
+	c := newTestClient(t, m)
+
+	_, err := c.Messages.SendBatch(t.Context(), MessageBatchParams{
+		Channel: String("sms"),
+	})
+	var baseErr *Error
+	if !errors.As(err, &baseErr) || !strings.Contains(err.Error(), "exactly one") {
+		t.Errorf("neither source: err = %v, want *Error mentioning 'exactly one'", err)
+	}
+
+	_, err = c.Messages.SendBatch(t.Context(), MessageBatchParams{
+		Messages: []map[string]any{{"to": map[string]any{"phone_number": "+1"}}},
+		File:     String("a1b2c3.csv"),
+	})
+	if !errors.As(err, &baseErr) || !strings.Contains(err.Error(), "exactly one") {
+		t.Errorf("both sources: err = %v, want *Error mentioning 'exactly one'", err)
+	}
+	if m.callCount() != 0 {
+		t.Errorf("client-side validation must not hit the network (calls = %d)", m.callCount())
+	}
+}
+
+func TestSendBatchFileForm(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, map[string]any{
+		"id":        "1042",
+		"object":    "batch",
+		"status":    "queued",
+		"row_count": 1200,
+	})))
+	c := newTestClient(t, m)
+
+	accepted := mustSendBatch(t, c, MessageBatchParams{
+		File:    String("a1b2c3d4.csv"),
+		Channel: String("sms"),
+		Content: map[string]any{"body": "Hello {{name}}"},
+	})
+	if accepted.ID != "1042" || accepted.Object != "batch" || accepted.Status != "queued" {
+		t.Errorf("accepted = %+v", accepted)
+	}
+	if accepted.RowCount == nil || *accepted.RowCount != 1200 {
+		t.Errorf("RowCount = %v, want 1200", accepted.RowCount)
+	}
+	// The file form has no per-row envelopes — Messages must be nil.
+	if accepted.Messages != nil {
+		t.Errorf("Messages = %+v, want nil on the file form", accepted.Messages)
+	}
+
+	last := m.lastCall(t)
+	if last.method != "POST" || last.path != "/api/v1/messages/batch/" {
+		t.Errorf("%s %s", last.method, last.path)
+	}
+	want := map[string]any{
+		"file":    "a1b2c3d4.csv",
+		"channel": "sms",
+		"content": map[string]any{"body": "Hello {{name}}"},
+	}
+	if got := last.jsonBody(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("body = %v, want exactly %v (no 'messages' key, nil defaults omitted)", got, want)
+	}
+}
+
+func TestSendBatchFileFormRowCountOmitted(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, map[string]any{
+		"id": "1043", "object": "batch", "status": "queued",
+	})))
+	c := newTestClient(t, m)
+
+	accepted := mustSendBatch(t, c, MessageBatchParams{File: String("a1b2c3d4.csv")})
+	if accepted.RowCount != nil {
+		t.Errorf("RowCount = %v, want nil when the server omits row_count", accepted.RowCount)
+	}
+	if accepted.Messages != nil {
+		t.Errorf("Messages = %+v, want nil", accepted.Messages)
+	}
+	if got := m.lastCall(t).jsonBody(t); !reflect.DeepEqual(got, map[string]any{"file": "a1b2c3d4.csv"}) {
+		t.Errorf("body = %v, want exactly {file}", got)
+	}
+}
+
+func TestSendBatchInlineRowDefaults(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBatch)))
+	c := newTestClient(t, m)
+
+	rows := []map[string]any{{"to": map[string]any{"phone_number": "+96550001234"}}}
+	mustSendBatch(t, c, MessageBatchParams{
+		Messages:         rows,
+		Channel:          String("whatsapp"),
+		Content:          map[string]any{"body": "fallback"},
+		Template:         map[string]any{"slug": "welcome"},
+		Provider:         String("meta_cloud"),
+		Sender:           String("ACME"),
+		Application:      String("acme-app"),
+		WidgetKey:        String("wk_1"),
+		Priority:         String("high"),
+		TTL:              Int(3600),
+		WhatsApp:         map[string]any{"preview_url": true},
+		WhatsAppTemplate: map[string]any{"name": "order_confirmed", "language": "en"},
+	})
+	want := map[string]any{
+		"messages":          []any{map[string]any{"to": map[string]any{"phone_number": "+96550001234"}}},
+		"channel":           "whatsapp",
+		"content":           map[string]any{"body": "fallback"},
+		"template":          map[string]any{"slug": "welcome"},
+		"provider":          "meta_cloud",
+		"sender":            "ACME",
+		"application":       "acme-app",
+		"widget_key":        "wk_1",
+		"priority":          "high",
+		"ttl":               float64(3600),
+		"whatsapp":          map[string]any{"preview_url": true},
+		"whatsapp_template": map[string]any{"name": "order_confirmed", "language": "en"},
+	}
+	if got := m.lastCall(t).jsonBody(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("body = %v, want all request-level row defaults serialized: %v", got, want)
+	}
+}
+
 func TestUnknownResponseFieldsTolerated(t *testing.T) {
 	body := map[string]any{"brand_new_field": "42"}
 	for k, v := range acceptedMessageWA {

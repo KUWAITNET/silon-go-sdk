@@ -63,11 +63,16 @@ client.Messages.Send(ctx, silon.MessageSendParams{
 
 ## Batches
 
-Up to 500 independent, personalised messages in one call — use it when
-every recipient gets *different* content (for one content fanned out to an
-audience, use a broadcast). Rows are free-form maps with the same shape as
-a single send minus `audience`; the top-level `Channel` is a default that
-a row's own `"channel"` overrides:
+Many independent, personalised messages in one call — use it when every
+recipient gets *different* content (for one content fanned out to an
+audience, use a broadcast). Exactly one of `Messages` (up to 500 inline
+rows) or `File` (a saved CSV name) is required — a client-side
+`*silon.Error` is returned otherwise. Request-level fields (`Channel`,
+`Content`, `Template`, `Provider`, ...) are row defaults on both forms; a
+row's own field (or CSV column) always wins.
+
+Inline rows are free-form maps with the same shape as a single send minus
+`audience`:
 
 ```go
 batch, err := client.Messages.SendBatch(ctx, silon.MessageBatchParams{
@@ -87,9 +92,33 @@ for _, row := range batch.Messages { // request order
 Validation is all-or-nothing: every row is validated up front and any
 invalid row 422s the whole batch with a per-index `Attr` like
 `messages[3].to.phone_number` — nothing is queued. An empty list is a 422
-`batch-empty`; more than 500 rows is a 422 `batch-too-large`. Batches have
-no GET endpoint — the per-row message ids are the tracking primitive.
-Requires the `messages:send` scope.
+`batch-empty`; more than 500 rows is a 422 `batch-too-large`. Inline
+batches have no GET endpoint — the per-row message ids are the tracking
+primitive. Requires the `messages:send` scope.
+
+For unbounded row counts, upload a CSV once and send it by name — rows
+expand asynchronously, so the 202 is the aggregate envelope only
+(`Messages` is nil):
+
+```go
+upload, err := client.Bulk.Files.Upload(ctx, silon.BulkFileUploadParams{
+    Path: "recipients.csv", // e.g. name,phone_number columns
+})
+batch, err := client.Messages.SendBatch(ctx, silon.MessageBatchParams{
+    File:    silon.String(upload.Name),
+    Channel: silon.String("sms"),
+    Content: map[string]any{"body": "Hello {{name}}"}, // {{columns}} render per row
+})
+fmt.Println(batch.ID, batch.Status) // "queued"; RowCount when cheaply known
+```
+
+The file-form `batch.ID` is the created bulk batch id — read per-row
+status with `client.Bulk.Retrieve(ctx, id)` and the bulk reports. A
+heterogeneous CSV (per-row `channel` / `message` columns) needs no
+defaults at all. An unknown `File` name is a 404 `file-not-found`;
+defaults the bulk pipeline cannot honor are rejected with a 422
+`batch-invalid`. This one endpoint replaces the deprecated `Bulk.Send`
+for every file shape.
 
 ## Broadcasts
 
@@ -152,7 +181,7 @@ model can be passed via `ExtraBody`, merged into the request body last.
 | `client.OTP` | `Send`, `Verify` |
 | `client.Clients` | `List`, `Create`, `Retrieve`, `Update`, `Replace`, `Delete` |
 | `client.ClientGroups` | `List`, `Create`, `Retrieve`, `Update`, `Replace`, `Delete` |
-| `client.Bulk` | `List`, `Retrieve`, `Send`, `Files.List`, `Files.Upload`, `Recipients.Retrieve` |
+| `client.Bulk` | `List`, `Retrieve`, `Send` (deprecated), `Files.List`, `Files.Upload`, `Recipients.Retrieve` |
 | `client.Reports` | `Messages`, `Channels`, `Clients`, `Users`, `Bulks`, `SpecificBulks`, `Subscriptions`, `AWSUsage`, `Balance` |
 | `client.WhatsAppTemplates` | `List`, `Retrieve` |
 | `client.WebhookEndpoints` | `List` (paginated), `Create`, `Retrieve`, `Update`, `Delete` |
@@ -161,9 +190,12 @@ model can be passed via `ExtraBody`, merged into the request body last.
 | `client.Profile` | `Retrieve`, `Update`, `Replace` |
 | `client.Auth` | `Signup`, `Login` (deprecated) |
 
-Deprecated operations (`Push.ListNotifications`, `Push.SubscribeWeb`,
-`Auth.Login`) carry Go's standard `// Deprecated:` doc-comment marker, which
-gopls and staticcheck surface at the call site.
+Deprecated operations (`Bulk.Send`, `Push.ListNotifications`,
+`Push.SubscribeWeb`, `Auth.Login`) carry Go's standard `// Deprecated:`
+doc-comment marker, which gopls and staticcheck surface at the call site.
+`Bulk.Send`'s successor for every shape is `Messages.SendBatch`
+(inline rows or a saved CSV via `File`); `Bulk.Files.Upload` / `Files.List`
+stay current as the CSV ingestion path.
 
 ## Pagination
 

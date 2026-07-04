@@ -22,6 +22,7 @@ func TestDeprecatedOpsCarryDeprecatedMarkers(t *testing.T) {
 		{"push.go", "PushService", "ListNotifications"},
 		{"push.go", "PushService", "SubscribeWeb"},
 		{"account.go", "AuthService", "Login"},
+		{"bulk.go", "BulkService", "Send"},
 	}
 
 	fset := token.NewFileSet()

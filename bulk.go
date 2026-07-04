@@ -530,6 +530,10 @@ func (s *BulkService) Retrieve(ctx context.Context, bulkID int) (*BulkBatchDetai
 // column->value map) or by referencing a previously uploaded CSV via
 // params.BulkFile — exactly one of the two, or a client-side *Error is
 // returned.
+//
+// Deprecated: use MessagesService.SendBatch — inline rows via Messages,
+// saved CSVs via File (upload with BulkFilesService.Upload, which stays
+// current). This endpoint's behavior is frozen; there is no removal date.
 func (s *BulkService) Send(ctx context.Context, params BulkSendParams) (*BulkSendResult, error) {
 	body, err := params.body()
 	if err != nil {
