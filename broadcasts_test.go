@@ -1,6 +1,9 @@
 package silon
 
 import (
+	"errors"
+	"reflect"
+	"regexp"
 	"testing"
 	"time"
 )
@@ -18,6 +21,24 @@ var broadcastJSON = map[string]any{
 }
 
 const deliveriesPath = "/api/v1/broadcasts/br_01J1/deliveries/"
+
+var acceptedBroadcastCreate = map[string]any{
+	"id":            "br_01J2",
+	"object":        "broadcast",
+	"channel":       "sms",
+	"status":        "queued",
+	"target_count":  2,
+	"skipped_count": 1,
+}
+
+func mustCreateBroadcast(t *testing.T, c *Client, params BroadcastCreateParams) *BroadcastAccepted {
+	t.Helper()
+	created, err := c.Broadcasts.Create(t.Context(), params)
+	if err != nil {
+		t.Fatalf("Broadcasts.Create: %v", err)
+	}
+	return created
+}
 
 func deliveryJSON(n int, status string) map[string]any {
 	return map[string]any{
@@ -184,5 +205,230 @@ func TestBroadcastDeliveriesAll(t *testing.T) {
 	}
 	if m.callCount() != 2 {
 		t.Errorf("calls = %d, want 2", m.callCount())
+	}
+}
+
+func TestBroadcastCreateMinimal(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBroadcastCreate)))
+	c := newTestClient(t, m)
+
+	created := mustCreateBroadcast(t, c, BroadcastCreateParams{
+		Channel:  "sms",
+		Audience: map[string]any{"type": "client_group", "slug": "vip"},
+		Content:  map[string]any{"body": "Flash sale ends tonight"},
+	})
+	if created.ID != "br_01J2" || created.Object != "broadcast" ||
+		created.Channel != "sms" || created.Status != "queued" {
+		t.Errorf("created = %+v", created)
+	}
+	if created.TargetCount != 2 || created.SkippedCount != 1 {
+		t.Errorf("counts = %+v", created)
+	}
+
+	last := m.lastCall(t)
+	if last.method != "POST" || last.path != "/api/v1/broadcasts/" {
+		t.Errorf("%s %s", last.method, last.path)
+	}
+	if ct := last.header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	want := map[string]any{
+		"channel":  "sms",
+		"audience": map[string]any{"type": "client_group", "slug": "vip"},
+		"content":  map[string]any{"body": "Flash sale ends tonight"},
+	}
+	if got := last.jsonBody(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("body = %v, want %v (null fields must be omitted)", got, want)
+	}
+}
+
+func TestBroadcastCreateRecipientsAudienceVerbatim(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBroadcastCreate)))
+	c := newTestClient(t, m)
+
+	audience := map[string]any{
+		"type": "recipients",
+		"recipients": []any{
+			map[string]any{"phone_number": "+96550001234"},
+			map[string]any{"phone_number": "+96550001235"},
+			map[string]any{"client_id": "cust_001"},
+		},
+	}
+	mustCreateBroadcast(t, c, BroadcastCreateParams{
+		Channel:  "sms",
+		Audience: audience,
+		Content:  map[string]any{"body": "hi"},
+	})
+
+	body := m.lastCall(t).jsonBody(t)
+	if !reflect.DeepEqual(body["audience"], audience) {
+		t.Errorf("audience = %v, want it passed through verbatim", body["audience"])
+	}
+	if _, present := body["to"]; present {
+		t.Error("'to' must be absent on a broadcast create")
+	}
+}
+
+func TestBroadcastCreateAutoGeneratesIdempotencyKey(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBroadcastCreate)))
+	c := newTestClient(t, m)
+	mustCreateBroadcast(t, c, BroadcastCreateParams{
+		Channel:  "sms",
+		Audience: map[string]any{"type": "client_group", "slug": "vip"},
+		Content:  map[string]any{"body": "x"},
+	})
+	key := m.lastCall(t).header.Get("Idempotency-Key")
+	uuidV4 := regexp.MustCompile(
+		`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	if !uuidV4.MatchString(key) {
+		t.Errorf("Idempotency-Key = %q, want a v4 UUID", key)
+	}
+}
+
+func TestBroadcastCreateExplicitIdempotencyKey(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBroadcastCreate)))
+	c := newTestClient(t, m)
+	mustCreateBroadcast(t, c, BroadcastCreateParams{
+		Channel:        "sms",
+		Audience:       map[string]any{"type": "client_group", "slug": "vip"},
+		Content:        map[string]any{"body": "x"},
+		IdempotencyKey: "my-key-2",
+	})
+	if got := m.lastCall(t).header.Get("Idempotency-Key"); got != "my-key-2" {
+		t.Errorf("Idempotency-Key = %q", got)
+	}
+}
+
+func TestBroadcastCreateRetriedWithSameKey(t *testing.T) {
+	m := newMockAPI(t, sequence(
+		jsonStub(500, map[string]any{}),
+		jsonStub(202, acceptedBroadcastCreate),
+	))
+	c := newTestClient(t, m, WithMaxRetries(2))
+	captureSleeps(c)
+
+	created := mustCreateBroadcast(t, c, BroadcastCreateParams{
+		Channel:  "sms",
+		Audience: map[string]any{"type": "client_group", "slug": "vip"},
+		Content:  map[string]any{"body": "hi"},
+	})
+	if created.ID != "br_01J2" {
+		t.Errorf("ID = %q", created.ID)
+	}
+	if m.callCount() != 2 {
+		t.Fatalf("calls = %d, want 2 (keyed POST must be retried)", m.callCount())
+	}
+	// The same Idempotency-Key must be replayed so the send cannot double-fire.
+	first := m.call(0).header.Get("Idempotency-Key")
+	second := m.call(1).header.Get("Idempotency-Key")
+	if first == "" || first != second {
+		t.Errorf("Idempotency-Key differs across attempts: %q vs %q", first, second)
+	}
+}
+
+func TestBroadcastCreateChannelSpecificFields(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBroadcastCreate)))
+	c := newTestClient(t, m)
+	template := map[string]any{
+		"name":      "order_confirmed",
+		"language":  "en",
+		"variables": map[string]any{"body_1": "Sara"},
+	}
+	mustCreateBroadcast(t, c, BroadcastCreateParams{
+		Channel:          "whatsapp",
+		Audience:         map[string]any{"type": "client_ids", "client_ids": []any{"cust_001"}},
+		WhatsAppTemplate: template,
+		Provider:         String("meta_cloud"),
+		Sender:           String("acme"),
+		Application:      String("consumer-app"),
+		Priority:         String("high"),
+		TTL:              Int(3600),
+	})
+	body := m.lastCall(t).jsonBody(t)
+	if body["provider"] != "meta_cloud" || body["sender"] != "acme" ||
+		body["application"] != "consumer-app" || body["priority"] != "high" {
+		t.Errorf("body = %v", body)
+	}
+	if body["ttl"] != float64(3600) {
+		t.Errorf("ttl = %v (%T)", body["ttl"], body["ttl"])
+	}
+	if !reflect.DeepEqual(body["whatsapp_template"], template) {
+		t.Errorf("whatsapp_template = %v", body["whatsapp_template"])
+	}
+	if _, present := body["content"]; present {
+		t.Error("'content' must be absent when not provided")
+	}
+}
+
+func TestBroadcastCreateExtraBodyPassthrough(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBroadcastCreate)))
+	c := newTestClient(t, m)
+	mustCreateBroadcast(t, c, BroadcastCreateParams{
+		Channel:  "web_push",
+		Audience: map[string]any{"type": "client_group", "slug": "vip"},
+		Content:  map[string]any{"body": "hi"},
+		Priority: String("low"),
+		ExtraBody: map[string]any{
+			"priority":     "high", // merged last: overrides the typed field
+			"future_field": map[string]any{"nested": true},
+		},
+	})
+	body := m.lastCall(t).jsonBody(t)
+	if body["priority"] != "high" {
+		t.Errorf("priority = %v, want ExtraBody to win on key collision", body["priority"])
+	}
+	if !reflect.DeepEqual(body["future_field"], map[string]any{"nested": true}) {
+		t.Errorf("future_field = %v", body["future_field"])
+	}
+}
+
+func TestBroadcastCreateUnknownResponseFieldsTolerated(t *testing.T) {
+	body := map[string]any{"brand_new_field": "42"}
+	for k, v := range acceptedBroadcastCreate {
+		body[k] = v
+	}
+	m := newMockAPI(t, always(jsonStub(202, body)))
+	c := newTestClient(t, m)
+
+	created := mustCreateBroadcast(t, c, BroadcastCreateParams{
+		Channel:  "sms",
+		Audience: map[string]any{"type": "client_group", "slug": "vip"},
+		Content:  map[string]any{"body": "x"},
+	})
+	if created.ID != "br_01J2" || created.TargetCount != 2 {
+		t.Errorf("known fields must still deserialize: %+v", created)
+	}
+}
+
+func TestBroadcastCreate422ProblemDecodes(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(422, map[string]any{
+		"type":   "https://acme.silon.tech/docs/errors/audience-too-large",
+		"title":  "Audience too large",
+		"status": 422,
+		"detail": "audience.recipients supports at most 1,000 rows.",
+		"field":  "audience.recipients",
+	})))
+	c := newTestClient(t, m)
+
+	_, err := c.Broadcasts.Create(t.Context(), BroadcastCreateParams{
+		Channel:  "sms",
+		Audience: map[string]any{"type": "recipients", "recipients": []any{}},
+		Content:  map[string]any{"body": "x"},
+	})
+	if !IsUnprocessableEntity(err) {
+		t.Fatalf("want 422 APIError, got %v", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want *APIError, got %T", err)
+	}
+	if len(apiErr.Errors) != 1 || apiErr.Errors[0].Code != "audience-too-large" {
+		t.Errorf("Errors = %+v, want code audience-too-large", apiErr.Errors)
+	}
+	if apiErr.Errors[0].Attr == nil || *apiErr.Errors[0].Attr != "audience.recipients" {
+		t.Errorf("Attr = %v, want audience.recipients", apiErr.Errors[0].Attr)
+	}
+	if m.callCount() != 1 {
+		t.Errorf("calls = %d, want 1 (422 must not be retried)", m.callCount())
 	}
 }

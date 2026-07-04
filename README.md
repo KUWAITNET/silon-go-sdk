@@ -59,14 +59,36 @@ client.Messages.Send(ctx, silon.MessageSendParams{
     },
     Provider: silon.String("meta_cloud"),
 })
+```
 
+## Broadcasts
+
+One piece of content fanned out to an audience — a CRM group, explicit
+client ids, or an inline ad-hoc list of raw addresses (max 1,000 rows;
+duplicates are deduped and counted in `SkippedCount`):
+
+```go
 // Email broadcast to a client group
-result, err := client.Messages.Send(ctx, silon.MessageSendParams{
+result, err := client.Broadcasts.Create(ctx, silon.BroadcastCreateParams{
     Channel:  "email",
     Audience: map[string]any{"type": "client_group", "slug": "vip"},
     Content:  map[string]any{"subject": "We saved you a seat", "body": "<h1>Hello</h1>"},
 })
-fmt.Println(*result.TargetCount, *result.SkippedCount)
+fmt.Println(result.TargetCount, result.SkippedCount)
+
+// SMS to an ad-hoc recipient list
+client.Broadcasts.Create(ctx, silon.BroadcastCreateParams{
+    Channel: "sms",
+    Audience: map[string]any{
+        "type": "recipients",
+        "recipients": []any{
+            map[string]any{"phone_number": "+96550001234"},
+            map[string]any{"phone_number": "+96550001235"},
+            map[string]any{"client_id": "cust_001"},
+        },
+    },
+    Content: map[string]any{"body": "Flash sale ends tonight"},
+})
 
 // Track it
 broadcast, err := client.Broadcasts.Retrieve(ctx, result.ID)
@@ -79,9 +101,12 @@ for delivery, err := range page.All(ctx) {
 }
 ```
 
-Every `Messages.Send` / `OTP.Send` call carries an `Idempotency-Key` header
-(auto-generated UUIDv4 unless you set `IdempotencyKey`), so automatic retries
-can never double-send.
+Requires the `broadcasts:send` scope. (`Messages.Send` with an `Audience`
+keeps working as a legacy alias for the same fan-out.)
+
+Every `Messages.Send` / `Broadcasts.Create` / `OTP.Send` call carries an
+`Idempotency-Key` header (auto-generated UUIDv4 unless you set
+`IdempotencyKey`), so automatic retries can never double-send.
 
 Optional scalar params are pointers — use the helpers `silon.String`,
 `silon.Int`, `silon.Bool`, `silon.Float`. Fields this SDK version does not
@@ -92,7 +117,7 @@ model can be passed via `ExtraBody`, merged into the request body last.
 | Resource | Methods |
 | --- | --- |
 | `client.Messages` | `Send`, `Retrieve` |
-| `client.Broadcasts` | `Retrieve`, `Deliveries` (paginated) |
+| `client.Broadcasts` | `Create`, `Retrieve`, `Deliveries` (paginated) |
 | `client.OTP` | `Send`, `Verify` |
 | `client.Clients` | `List`, `Create`, `Retrieve`, `Update`, `Replace`, `Delete` |
 | `client.ClientGroups` | `List`, `Create`, `Retrieve`, `Update`, `Replace`, `Delete` |

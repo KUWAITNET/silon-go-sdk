@@ -9,11 +9,121 @@ import (
 
 const broadcastsPath = "/api/v1/broadcasts/"
 
-// BroadcastsService inspects audience fan-outs created by
-// MessagesService.Send with an Audience target: aggregate delivery counts
-// and per-recipient delivery rows. Access it via Client.Broadcasts.
+// BroadcastsService creates broadcasts (one piece of content fanned out to
+// an audience, POST /api/v1/broadcasts/) and inspects them: aggregate
+// delivery counts and per-recipient delivery rows. Access it via
+// Client.Broadcasts.
 type BroadcastsService struct {
 	client *Client
+}
+
+// BroadcastCreateParams are the parameters for BroadcastsService.Create.
+//
+// Channel and Audience are required. All other fields are optional; nil
+// fields are omitted from the request JSON. Fields not covered here can be
+// passed via ExtraBody, which is merged into the body last (overriding on
+// key collision).
+type BroadcastCreateParams struct {
+	// Channel is required: "sms", "whatsapp", "email", "push", "web_push", ...
+	Channel string
+
+	// Audience is required and selects the recipients, e.g.
+	// {"type": "client_group", "slug": ...},
+	// {"type": "client_ids", "client_ids": [...]} or an inline ad-hoc list
+	// {"type": "recipients", "recipients": [{"phone_number": ...},
+	// {"email": ...}, {"client_id": ...}, ...]} (max 1,000 rows; duplicate
+	// addresses are deduped and counted in SkippedCount).
+	Audience map[string]any
+
+	// Content is the message content, e.g. {"body": ...} and, for email,
+	// {"subject": ...}.
+	Content map[string]any
+
+	// Template references a stored message template.
+	Template map[string]any
+
+	Provider    *string
+	Sender      *string
+	Application *string
+	WidgetKey   *string
+	Priority    *string
+	TTL         *int
+
+	// WhatsApp holds channel-specific options for WhatsApp sends.
+	WhatsApp map[string]any
+
+	// WhatsAppTemplate selects a WhatsApp template, e.g. {"name": ...,
+	// "language": ..., "variables": {...}}.
+	WhatsAppTemplate map[string]any
+
+	// IdempotencyKey is sent as the Idempotency-Key header. When empty, a
+	// UUIDv4 is generated — the header is ALWAYS sent, and the same value
+	// is replayed on every retry attempt, so a retry can never double-send.
+	IdempotencyKey string
+
+	// ExtraBody is merged into the request body last — an escape hatch
+	// for fields this SDK version does not model.
+	ExtraBody map[string]any
+}
+
+func (p BroadcastCreateParams) body() map[string]any {
+	body := map[string]any{
+		"channel":  p.Channel,
+		"audience": p.Audience,
+	}
+	if p.Content != nil {
+		body["content"] = p.Content
+	}
+	if p.Template != nil {
+		body["template"] = p.Template
+	}
+	if p.Provider != nil {
+		body["provider"] = *p.Provider
+	}
+	if p.Sender != nil {
+		body["sender"] = *p.Sender
+	}
+	if p.Application != nil {
+		body["application"] = *p.Application
+	}
+	if p.WidgetKey != nil {
+		body["widget_key"] = *p.WidgetKey
+	}
+	if p.Priority != nil {
+		body["priority"] = *p.Priority
+	}
+	if p.TTL != nil {
+		body["ttl"] = *p.TTL
+	}
+	if p.WhatsApp != nil {
+		body["whatsapp"] = p.WhatsApp
+	}
+	if p.WhatsAppTemplate != nil {
+		body["whatsapp_template"] = p.WhatsAppTemplate
+	}
+	for k, v := range p.ExtraBody {
+		body[k] = v
+	}
+	return body
+}
+
+// BroadcastAccepted is the 202 envelope from POST /api/v1/broadcasts/.
+type BroadcastAccepted struct {
+	// ID is the broadcast id ("br_" prefixed).
+	ID string `json:"id"`
+
+	// Object is "broadcast".
+	Object string `json:"object"`
+
+	Channel string `json:"channel"`
+	Status  string `json:"status"`
+
+	// TargetCount is the number of recipients targeted.
+	TargetCount int `json:"target_count"`
+
+	// SkippedCount is the number of recipients skipped (duplicates,
+	// unsubscribed, unreachable).
+	SkippedCount int `json:"skipped_count"`
 }
 
 // Broadcast is the body of GET /api/v1/broadcasts/{broadcast_id}/ —
@@ -87,6 +197,25 @@ func (p BroadcastDeliveriesParams) values() url.Values {
 		q.Set("limit", strconv.Itoa(*p.Limit))
 	}
 	return q
+}
+
+// Create sends a broadcast — one piece of content fanned out to an
+// audience — on any outbound channel (POST /api/v1/broadcasts/, 202).
+//
+// An Idempotency-Key header is always sent (auto-generated UUIDv4 when
+// params.IdempotencyKey is empty), which makes automatic retries safe.
+// Requires the broadcasts:send scope.
+func (s *BroadcastsService) Create(ctx context.Context, params BroadcastCreateParams) (*BroadcastAccepted, error) {
+	key := params.IdempotencyKey
+	if key == "" {
+		key = newUUID()
+	}
+	var out BroadcastAccepted
+	if err := s.client.post(ctx, broadcastsPath, params.body(),
+		map[string]string{"Idempotency-Key": key}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // Retrieve fetches aggregate delivery counts for a broadcast
