@@ -240,6 +240,217 @@ func TestRetrieveStatus(t *testing.T) {
 	}
 }
 
+var acceptedBatch = map[string]any{
+	"id":     "batch_01J4",
+	"object": "batch",
+	"messages": []any{
+		map[string]any{"id": "m-1", "object": "message", "channel": "sms", "status": "queued"},
+		map[string]any{"id": "m-2", "object": "message", "channel": "email", "status": "queued"},
+	},
+}
+
+func mustSendBatch(t *testing.T, c *Client, params MessageBatchParams) *BatchAccepted {
+	t.Helper()
+	accepted, err := c.Messages.SendBatch(t.Context(), params)
+	if err != nil {
+		t.Fatalf("Messages.SendBatch: %v", err)
+	}
+	return accepted
+}
+
+func TestSendBatchMinimal(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBatch)))
+	c := newTestClient(t, m)
+
+	rows := []map[string]any{
+		{"channel": "sms", "to": map[string]any{"phone_number": "+96550001234"},
+			"content": map[string]any{"body": "Sara, your table for 2 is confirmed."}},
+		{"channel": "email", "to": map[string]any{"email": "omar@example.com"},
+			"content": map[string]any{"subject": "Confirmed", "body": "Omar, see you at 9pm."}},
+	}
+	accepted := mustSendBatch(t, c, MessageBatchParams{Messages: rows})
+	if accepted.ID != "batch_01J4" || accepted.Object != "batch" {
+		t.Errorf("accepted = %+v", accepted)
+	}
+	// Per-row envelopes must come back in request order.
+	if len(accepted.Messages) != 2 ||
+		accepted.Messages[0].ID != "m-1" || accepted.Messages[1].ID != "m-2" {
+		t.Fatalf("Messages = %+v", accepted.Messages)
+	}
+	first := accepted.Messages[0]
+	if first.Object != "message" || first.Channel != "sms" || first.Status != "queued" {
+		t.Errorf("Messages[0] = %+v", first)
+	}
+
+	last := m.lastCall(t)
+	if last.method != "POST" || last.path != "/api/v1/messages/batch/" {
+		t.Errorf("%s %s", last.method, last.path)
+	}
+	if ct := last.header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	want := map[string]any{
+		"messages": []any{
+			map[string]any{"channel": "sms", "to": map[string]any{"phone_number": "+96550001234"},
+				"content": map[string]any{"body": "Sara, your table for 2 is confirmed."}},
+			map[string]any{"channel": "email", "to": map[string]any{"email": "omar@example.com"},
+				"content": map[string]any{"subject": "Confirmed", "body": "Omar, see you at 9pm."}},
+		},
+	}
+	if got := last.jsonBody(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("body = %v, want %v (null fields must be omitted, rows verbatim)", got, want)
+	}
+}
+
+func TestSendBatchTopLevelDefaultChannel(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBatch)))
+	c := newTestClient(t, m)
+
+	mustSendBatch(t, c, MessageBatchParams{
+		Channel: String("sms"),
+		Messages: []map[string]any{
+			{"to": map[string]any{"phone_number": "+96550001234"},
+				"content": map[string]any{"body": "hi"}},
+		},
+	})
+	body := m.lastCall(t).jsonBody(t)
+	if body["channel"] != "sms" {
+		t.Errorf("channel = %v, want top-level default forwarded", body["channel"])
+	}
+}
+
+func TestSendBatchAutoGeneratesIdempotencyKey(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBatch)))
+	c := newTestClient(t, m)
+	mustSendBatch(t, c, MessageBatchParams{
+		Channel:  String("sms"),
+		Messages: []map[string]any{{"to": map[string]any{"phone_number": "+1"}}},
+	})
+	key := m.lastCall(t).header.Get("Idempotency-Key")
+	uuidV4 := regexp.MustCompile(
+		`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	if !uuidV4.MatchString(key) {
+		t.Errorf("Idempotency-Key = %q, want a v4 UUID", key)
+	}
+}
+
+func TestSendBatchExplicitIdempotencyKey(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBatch)))
+	c := newTestClient(t, m)
+	mustSendBatch(t, c, MessageBatchParams{
+		Channel:        String("sms"),
+		Messages:       []map[string]any{{"to": map[string]any{"phone_number": "+1"}}},
+		IdempotencyKey: "my-key-3",
+	})
+	if got := m.lastCall(t).header.Get("Idempotency-Key"); got != "my-key-3" {
+		t.Errorf("Idempotency-Key = %q", got)
+	}
+}
+
+func TestSendBatchRetriedWithSameKey(t *testing.T) {
+	m := newMockAPI(t, sequence(
+		jsonStub(500, map[string]any{}),
+		jsonStub(202, acceptedBatch),
+	))
+	c := newTestClient(t, m, WithMaxRetries(2))
+	captureSleeps(c)
+
+	accepted := mustSendBatch(t, c, MessageBatchParams{
+		Channel:  String("sms"),
+		Messages: []map[string]any{{"to": map[string]any{"phone_number": "+1"}}},
+	})
+	if accepted.ID != "batch_01J4" {
+		t.Errorf("ID = %q", accepted.ID)
+	}
+	if m.callCount() != 2 {
+		t.Fatalf("calls = %d, want 2 (keyed POST must be retried)", m.callCount())
+	}
+	// The same Idempotency-Key must be replayed so the batch cannot double-fire.
+	first := m.call(0).header.Get("Idempotency-Key")
+	second := m.call(1).header.Get("Idempotency-Key")
+	if first == "" || first != second {
+		t.Errorf("Idempotency-Key differs across attempts: %q vs %q", first, second)
+	}
+}
+
+func TestSendBatchExtraBodyPassthrough(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBatch)))
+	c := newTestClient(t, m)
+	mustSendBatch(t, c, MessageBatchParams{
+		Channel:  String("sms"),
+		Messages: []map[string]any{{"to": map[string]any{"phone_number": "+1"}}},
+		ExtraBody: map[string]any{
+			"channel":      "email", // merged last: overrides the typed field
+			"future_field": map[string]any{"nested": true},
+		},
+	})
+	body := m.lastCall(t).jsonBody(t)
+	if body["channel"] != "email" {
+		t.Errorf("channel = %v, want ExtraBody to win on key collision", body["channel"])
+	}
+	if !reflect.DeepEqual(body["future_field"], map[string]any{"nested": true}) {
+		t.Errorf("future_field = %v", body["future_field"])
+	}
+}
+
+func TestSendBatchUnknownResponseFieldsTolerated(t *testing.T) {
+	body := map[string]any{
+		"brand_new_field": "42",
+		"messages": []any{map[string]any{
+			"id": "m-1", "object": "message", "channel": "sms",
+			"status": "queued", "row_new_field": true,
+		}},
+	}
+	for k, v := range acceptedBatch {
+		if k != "messages" {
+			body[k] = v
+		}
+	}
+	m := newMockAPI(t, always(jsonStub(202, body)))
+	c := newTestClient(t, m)
+
+	accepted := mustSendBatch(t, c, MessageBatchParams{
+		Channel:  String("sms"),
+		Messages: []map[string]any{{"to": map[string]any{"phone_number": "+1"}}},
+	})
+	if accepted.ID != "batch_01J4" || len(accepted.Messages) != 1 ||
+		accepted.Messages[0].ID != "m-1" {
+		t.Errorf("known fields must still deserialize: %+v", accepted)
+	}
+}
+
+func TestSendBatch422ProblemDecodes(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(422, map[string]any{
+		"type":   "https://acme.silon.tech/docs/errors/validation-failed",
+		"title":  "Validation failed",
+		"status": 422,
+		"detail": "Row 3 is invalid; nothing was queued.",
+		"field":  "messages[3].to.phone_number",
+	})))
+	c := newTestClient(t, m)
+
+	_, err := c.Messages.SendBatch(t.Context(), MessageBatchParams{
+		Channel:  String("sms"),
+		Messages: []map[string]any{{"to": map[string]any{"phone_number": "not-a-number"}}},
+	})
+	if !IsUnprocessableEntity(err) {
+		t.Fatalf("want 422 APIError, got %v", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want *APIError, got %T", err)
+	}
+	if len(apiErr.Errors) != 1 || apiErr.Errors[0].Code != "validation-failed" {
+		t.Errorf("Errors = %+v, want code validation-failed", apiErr.Errors)
+	}
+	if apiErr.Errors[0].Attr == nil || *apiErr.Errors[0].Attr != "messages[3].to.phone_number" {
+		t.Errorf("Attr = %v, want the per-index path messages[3].to.phone_number", apiErr.Errors[0].Attr)
+	}
+	if m.callCount() != 1 {
+		t.Errorf("calls = %d, want 1 (422 must not be retried)", m.callCount())
+	}
+}
+
 func TestUnknownResponseFieldsTolerated(t *testing.T) {
 	body := map[string]any{"brand_new_field": "42"}
 	for k, v := range acceptedMessageWA {

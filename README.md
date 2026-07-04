@@ -61,6 +61,36 @@ client.Messages.Send(ctx, silon.MessageSendParams{
 })
 ```
 
+## Batches
+
+Up to 500 independent, personalised messages in one call — use it when
+every recipient gets *different* content (for one content fanned out to an
+audience, use a broadcast). Rows are free-form maps with the same shape as
+a single send minus `audience`; the top-level `Channel` is a default that
+a row's own `"channel"` overrides:
+
+```go
+batch, err := client.Messages.SendBatch(ctx, silon.MessageBatchParams{
+    Channel: silon.String("sms"),
+    Messages: []map[string]any{
+        {"to": map[string]any{"phone_number": "+96550001234"},
+            "content": map[string]any{"body": "Sara, your table for 2 is confirmed."}},
+        {"to": map[string]any{"phone_number": "+96550001235"},
+            "content": map[string]any{"body": "Omar, your table for 4 is confirmed."}},
+    },
+})
+for _, row := range batch.Messages { // request order
+    fmt.Println(row.ID, row.Status)  // each ID works with Messages.Retrieve
+}
+```
+
+Validation is all-or-nothing: every row is validated up front and any
+invalid row 422s the whole batch with a per-index `Attr` like
+`messages[3].to.phone_number` — nothing is queued. An empty list is a 422
+`batch-empty`; more than 500 rows is a 422 `batch-too-large`. Batches have
+no GET endpoint — the per-row message ids are the tracking primitive.
+Requires the `messages:send` scope.
+
 ## Broadcasts
 
 One piece of content fanned out to an audience — a CRM group, explicit
@@ -104,9 +134,10 @@ for delivery, err := range page.All(ctx) {
 Requires the `broadcasts:send` scope. (`Messages.Send` with an `Audience`
 keeps working as a legacy alias for the same fan-out.)
 
-Every `Messages.Send` / `Broadcasts.Create` / `OTP.Send` call carries an
-`Idempotency-Key` header (auto-generated UUIDv4 unless you set
-`IdempotencyKey`), so automatic retries can never double-send.
+Every `Messages.Send` / `Messages.SendBatch` / `Broadcasts.Create` /
+`OTP.Send` call carries an `Idempotency-Key` header (auto-generated UUIDv4
+unless you set `IdempotencyKey`), so automatic retries can never
+double-send.
 
 Optional scalar params are pointers — use the helpers `silon.String`,
 `silon.Int`, `silon.Bool`, `silon.Float`. Fields this SDK version does not
@@ -116,7 +147,7 @@ model can be passed via `ExtraBody`, merged into the request body last.
 
 | Resource | Methods |
 | --- | --- |
-| `client.Messages` | `Send`, `Retrieve` |
+| `client.Messages` | `Send`, `SendBatch`, `Retrieve` |
 | `client.Broadcasts` | `Create`, `Retrieve`, `Deliveries` (paginated) |
 | `client.OTP` | `Send`, `Verify` |
 | `client.Clients` | `List`, `Create`, `Retrieve`, `Update`, `Replace`, `Delete` |

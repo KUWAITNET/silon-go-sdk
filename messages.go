@@ -5,7 +5,10 @@ import (
 	"net/url"
 )
 
-const messagesPath = "/api/v1/messages/"
+const (
+	messagesPath      = "/api/v1/messages/"
+	messagesBatchPath = messagesPath + "batch/"
+)
 
 // MessagesService sends messages on any channel (POST /api/v1/messages/)
 // and looks up delivery status. Access it via Client.Messages.
@@ -111,6 +114,75 @@ func (p MessageSendParams) body() (map[string]any, error) {
 	return body, nil
 }
 
+// MessageBatchParams are the parameters for MessagesService.SendBatch.
+//
+// Messages is required. All other fields are optional; nil fields are
+// omitted from the request JSON. Fields not covered here can be passed via
+// ExtraBody, which is merged into the body last (overriding on key
+// collision).
+type MessageBatchParams struct {
+	// Messages is required: 1-500 free-form rows, each the same shape as
+	// a MessageSendParams body minus Audience (rows are single-recipient
+	// by definition — a row carrying "audience" fails the batch with a
+	// per-index 422 pointing at POST /api/v1/broadcasts/). "to" is
+	// required per row; a row's own "channel" overrides the top-level
+	// default Channel (one of the two must yield a channel); the content
+	// fields ("content", "template", "whatsapp_template", ...) are the
+	// same as on a single send. Rows are sent verbatim.
+	Messages []map[string]any
+
+	// Channel is the optional top-level default channel applied to rows
+	// that do not carry their own: "sms", "whatsapp", "email", "push",
+	// "web_push", ...
+	Channel *string
+
+	// IdempotencyKey is sent as the Idempotency-Key header. When empty, a
+	// UUIDv4 is generated — the header is ALWAYS sent, and the same value
+	// is replayed on every retry attempt, so a retry can never double-send.
+	IdempotencyKey string
+
+	// ExtraBody is merged into the request body last — an escape hatch
+	// for fields this SDK version does not model.
+	ExtraBody map[string]any
+}
+
+func (p MessageBatchParams) body() map[string]any {
+	body := map[string]any{"messages": p.Messages}
+	if p.Channel != nil {
+		body["channel"] = *p.Channel
+	}
+	for k, v := range p.ExtraBody {
+		body[k] = v
+	}
+	return body
+}
+
+// BatchMessage is one per-row envelope inside BatchAccepted.
+type BatchMessage struct {
+	// ID is the row's message tracking id, individually pollable at
+	// GET /api/v1/messages/{id}/ (MessagesService.Retrieve).
+	ID string `json:"id"`
+
+	// Object is "message".
+	Object string `json:"object"`
+
+	Channel string `json:"channel"`
+	Status  string `json:"status"`
+}
+
+// BatchAccepted is the 202 envelope from POST /api/v1/messages/batch/.
+type BatchAccepted struct {
+	// ID is the batch id. It identifies the accepted request; batches
+	// have no GET endpoint.
+	ID string `json:"id"`
+
+	// Object is "batch".
+	Object string `json:"object"`
+
+	// Messages holds the per-row envelopes, in request order.
+	Messages []BatchMessage `json:"messages"`
+}
+
 // MessageAccepted is the 202 envelope from POST /api/v1/messages/.
 type MessageAccepted struct {
 	// ID is the tracking id for the message, or the broadcast id.
@@ -164,6 +236,34 @@ func (s *MessagesService) Send(ctx context.Context, params MessageSendParams) (*
 	}
 	var out MessageAccepted
 	if err := s.client.post(ctx, messagesPath, body,
+		map[string]string{"Idempotency-Key": key}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SendBatch sends up to 500 independent, personalised messages in one call
+// (POST /api/v1/messages/batch/, 202). Use it when every recipient gets
+// different content; for one content fanned out to an audience, use
+// BroadcastsService.Create.
+//
+// Validation is all-or-nothing: the server validates every row through the
+// same per-channel rules as Send before anything is queued, and any invalid
+// row fails the whole batch with a 422 whose Attr carries a per-index path
+// (e.g. "messages[3].to.phone_number"). An empty list is a 422 slug
+// "batch-empty"; more than 500 rows is a 422 slug "batch-too-large".
+//
+// An Idempotency-Key header is always sent (auto-generated UUIDv4 when
+// params.IdempotencyKey is empty), which makes automatic retries safe —
+// a replay returns the same body including identical per-row ids.
+// Requires the messages:send scope.
+func (s *MessagesService) SendBatch(ctx context.Context, params MessageBatchParams) (*BatchAccepted, error) {
+	key := params.IdempotencyKey
+	if key == "" {
+		key = newUUID()
+	}
+	var out BatchAccepted
+	if err := s.client.post(ctx, messagesBatchPath, params.body(),
 		map[string]string{"Idempotency-Key": key}, &out); err != nil {
 		return nil, err
 	}
