@@ -13,6 +13,7 @@ var otpSendResponse = map[string]any{
 	"otp_id":     "018f7c2e-0000-7000-8000-000000000001",
 	"expires_at": "2026-07-02T12:05:00Z",
 	"channel":    "sms",
+	"livemode":   true,
 	"task_ids":   []any{"t1"},
 }
 
@@ -36,6 +37,9 @@ func TestOTPSend(t *testing.T) {
 	}
 	if len(result.TaskIDs) != 1 || result.TaskIDs[0] != "t1" {
 		t.Errorf("TaskIDs = %v", result.TaskIDs)
+	}
+	if !result.Livemode {
+		t.Error("Livemode = false, want true on a live OTP send")
 	}
 
 	last := m.lastCall(t)
@@ -106,6 +110,7 @@ func TestOTPVerifySuccess(t *testing.T) {
 	m := newMockAPI(t, always(jsonStub(200, map[string]any{
 		"verified":    true,
 		"purpose":     "login",
+		"livemode":    true,
 		"verified_at": "2026-07-02T12:01:00Z",
 	})))
 	c := newTestClient(t, m)
@@ -116,6 +121,9 @@ func TestOTPVerifySuccess(t *testing.T) {
 	}
 	if !result.Verified || result.Purpose != "login" {
 		t.Errorf("result = %+v", result)
+	}
+	if !result.Livemode {
+		t.Error("Livemode = false, want true on a live OTP verify")
 	}
 	wantAt := time.Date(2026, 7, 2, 12, 1, 0, 0, time.UTC)
 	if !result.VerifiedAt.Equal(wantAt) {
@@ -133,6 +141,48 @@ func TestOTPVerifySuccess(t *testing.T) {
 	}
 	if got := last.header.Get("Idempotency-Key"); got != "" {
 		t.Errorf("verify must not send an Idempotency-Key, got %q", got)
+	}
+}
+
+func TestOTPSendDecodesTestModeLivemodeFalse(t *testing.T) {
+	body := map[string]any{}
+	for k, v := range otpSendResponse {
+		body[k] = v
+	}
+	body["livemode"] = false
+	m := newMockAPI(t, always(jsonStub(202, body)))
+	c := newTestClient(t, m)
+
+	result, err := c.OTP.Send(t.Context(), OTPSendParams{
+		Purpose: "login",
+		To:      map[string]any{"phone_number": "+96512345678"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Livemode {
+		t.Error("Livemode = true, want false on a test-mode OTP send")
+	}
+}
+
+func TestOTPVerifyDecodesTestModeLivemodeFalse(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(200, map[string]any{
+		"verified":    true,
+		"purpose":     "login",
+		"livemode":    false,
+		"verified_at": "2026-07-02T12:01:00Z",
+	})))
+	c := newTestClient(t, m)
+
+	result, err := c.OTP.Verify(t.Context(), OTPVerifyParams{OTPID: "otp-1", Code: "000000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified {
+		t.Errorf("result = %+v", result)
+	}
+	if result.Livemode {
+		t.Error("Livemode = true, want false on a test-mode OTP verify")
 	}
 }
 

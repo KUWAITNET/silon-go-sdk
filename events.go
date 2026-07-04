@@ -30,6 +30,9 @@ type EventData struct {
 	SentAt      *time.Time `json:"sent_at,omitempty"`
 	CreatedAt   *time.Time `json:"created_at,omitempty"`
 
+	// Livemode is false when the underlying send ran in test mode.
+	Livemode *bool `json:"livemode,omitempty"`
+
 	// broadcast.completed only.
 	TargetCount *int `json:"target_count,omitempty"`
 	Sent        *int `json:"sent,omitempty"`
@@ -46,6 +49,10 @@ type Event struct {
 
 	// Type is "message.delivered" / "message.failed" / "broadcast.completed".
 	Type string `json:"type"`
+
+	// Livemode is false when the event was produced by a test-mode
+	// (sk_test_) send; true for live traffic.
+	Livemode bool `json:"livemode"`
 
 	APIVersion string     `json:"api_version,omitempty"`
 	Created    *time.Time `json:"created,omitempty"`

@@ -115,6 +115,10 @@ type BroadcastAccepted struct {
 	// Object is "broadcast".
 	Object string `json:"object"`
 
+	// Livemode is false when the broadcast ran in test mode (an sk_test_
+	// key): nothing reaches a provider and nothing is billed.
+	Livemode bool `json:"livemode"`
+
 	Channel string `json:"channel"`
 	Status  string `json:"status"`
 
@@ -134,6 +138,11 @@ type Broadcast struct {
 
 	// Channel is the channel slug the broadcast was sent on.
 	Channel string `json:"channel"`
+
+	// Livemode is false when the broadcast ran in test mode (an sk_test_
+	// key) — its per-recipient statuses are simulated. Nil when the
+	// server does not report a mode.
+	Livemode *bool `json:"livemode,omitempty"`
 
 	// TargetCount is the total number of recipient rows in the broadcast.
 	TargetCount int `json:"target_count"`

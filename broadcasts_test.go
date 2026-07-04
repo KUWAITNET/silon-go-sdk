@@ -11,6 +11,7 @@ import (
 var broadcastJSON = map[string]any{
 	"id":           "br_01J1",
 	"channel":      "email",
+	"livemode":     true,
 	"target_count": 100,
 	"queued":       0,
 	"sent":         97,
@@ -25,6 +26,7 @@ const deliveriesPath = "/api/v1/broadcasts/br_01J1/deliveries/"
 var acceptedBroadcastCreate = map[string]any{
 	"id":            "br_01J2",
 	"object":        "broadcast",
+	"livemode":      true,
 	"channel":       "sms",
 	"status":        "queued",
 	"target_count":  2,
@@ -94,6 +96,9 @@ func TestBroadcastRetrieve(t *testing.T) {
 	}
 	if broadcast.TargetCount != 100 || broadcast.Sent != 97 || broadcast.Failed != 3 || broadcast.Queued != 0 {
 		t.Errorf("counts = %+v", broadcast)
+	}
+	if broadcast.Livemode == nil || !*broadcast.Livemode {
+		t.Errorf("Livemode = %v, want true on a live broadcast", broadcast.Livemode)
 	}
 	want := time.Date(2026, 7, 1, 10, 5, 0, 0, time.UTC)
 	if broadcast.CompletedAt == nil || !broadcast.CompletedAt.Equal(want) {
@@ -224,6 +229,9 @@ func TestBroadcastCreateMinimal(t *testing.T) {
 	if created.TargetCount != 2 || created.SkippedCount != 1 {
 		t.Errorf("counts = %+v", created)
 	}
+	if !created.Livemode {
+		t.Error("Livemode = false, want true on a live broadcast create")
+	}
 
 	last := m.lastCall(t)
 	if last.method != "POST" || last.path != "/api/v1/broadcasts/" {
@@ -239,6 +247,43 @@ func TestBroadcastCreateMinimal(t *testing.T) {
 	}
 	if got := last.jsonBody(t); !reflect.DeepEqual(got, want) {
 		t.Errorf("body = %v, want %v (null fields must be omitted)", got, want)
+	}
+}
+
+func TestBroadcastCreateDecodesTestModeLivemodeFalse(t *testing.T) {
+	body := map[string]any{}
+	for k, v := range acceptedBroadcastCreate {
+		body[k] = v
+	}
+	body["livemode"] = false
+	m := newMockAPI(t, always(jsonStub(202, body)))
+	c := newTestClient(t, m)
+
+	created := mustCreateBroadcast(t, c, BroadcastCreateParams{
+		Channel:  "sms",
+		Audience: map[string]any{"type": "client_group", "slug": "vip"},
+		Content:  map[string]any{"body": "test-mode broadcast"},
+	})
+	if created.Livemode {
+		t.Error("Livemode = true, want false on a test-mode broadcast create")
+	}
+}
+
+func TestBroadcastRetrieveDecodesTestModeLivemodeFalse(t *testing.T) {
+	body := map[string]any{}
+	for k, v := range broadcastJSON {
+		body[k] = v
+	}
+	body["livemode"] = false
+	m := newMockAPI(t, always(jsonStub(200, body)))
+	c := newTestClient(t, m)
+
+	broadcast, err := c.Broadcasts.Retrieve(t.Context(), "br_01J1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if broadcast.Livemode == nil || *broadcast.Livemode {
+		t.Errorf("Livemode = %v, want false on a test-mode broadcast", broadcast.Livemode)
 	}
 }
 

@@ -10,6 +10,7 @@ var fullEventJSON = map[string]any{
 	"id":          "evt_01J1",
 	"object":      "event",
 	"type":        "message.failed",
+	"livemode":    true,
 	"api_version": "2026-06-28",
 	"created":     "2026-07-01T10:00:00Z",
 	"data": map[string]any{
@@ -25,6 +26,7 @@ var fullEventJSON = map[string]any{
 		"external_id":  nil,
 		"sent_at":      nil,
 		"created_at":   "2026-07-01T09:59:00Z",
+		"livemode":     true,
 	},
 }
 
@@ -68,6 +70,9 @@ func TestEventsRetrieveNoTrailingSlash(t *testing.T) {
 	if event.ID != "evt_01J1" || event.Type != "message.failed" || event.APIVersion != "2026-06-28" {
 		t.Errorf("event = %+v", event)
 	}
+	if !event.Livemode {
+		t.Error("Livemode = false, want true on a live event")
+	}
 	wantCreated := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	if event.Created == nil || !event.Created.Equal(wantCreated) {
 		t.Errorf("Created = %v", event.Created)
@@ -80,6 +85,34 @@ func TestEventsRetrieveNoTrailingSlash(t *testing.T) {
 	}
 	if event.Data.SentAt != nil || event.Data.ExternalID != nil {
 		t.Errorf("null data fields must stay nil: %+v", event.Data)
+	}
+	if event.Data.Livemode == nil || !*event.Data.Livemode {
+		t.Errorf("Data.Livemode = %v, want true on a live event", event.Data.Livemode)
+	}
+}
+
+func TestEventsRetrieveDecodesTestModeLivemodeFalse(t *testing.T) {
+	body := map[string]any{}
+	for k, v := range fullEventJSON {
+		body[k] = v
+	}
+	body["livemode"] = false
+	body["data"] = map[string]any{
+		"id": "msg_1", "object": "message", "channel": "sms",
+		"status": "delivered", "livemode": false,
+	}
+	m := newMockAPI(t, always(jsonStub(200, body)))
+	c := newTestClient(t, m)
+
+	event, err := c.Events.Retrieve(t.Context(), "evt_01J1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Livemode {
+		t.Error("Livemode = true, want false on a test-mode event")
+	}
+	if event.Data.Livemode == nil || *event.Data.Livemode {
+		t.Errorf("Data.Livemode = %v, want false on a test-mode event", event.Data.Livemode)
 	}
 }
 

@@ -9,15 +9,17 @@ import (
 )
 
 var acceptedMessageWA = map[string]any{
-	"id":      "9f3e8a82-1c5a-4b1f-9d4c-7b5d2c8f3e9a",
-	"object":  "message",
-	"channel": "whatsapp",
-	"status":  "queued",
+	"id":       "9f3e8a82-1c5a-4b1f-9d4c-7b5d2c8f3e9a",
+	"object":   "message",
+	"livemode": true,
+	"channel":  "whatsapp",
+	"status":   "queued",
 }
 
 var acceptedBroadcast = map[string]any{
 	"id":            "br_01J1",
 	"object":        "broadcast",
+	"livemode":      true,
 	"channel":       "email",
 	"status":        "queued",
 	"target_count":  240,
@@ -35,6 +37,9 @@ func TestSendMinimal(t *testing.T) {
 	})
 	if sent.Object != "message" || sent.Status != "queued" {
 		t.Errorf("sent = %+v", sent)
+	}
+	if !sent.Livemode {
+		t.Error("Livemode = false, want true on a live send")
 	}
 	if sent.TargetCount != nil || sent.SkippedCount != nil {
 		t.Errorf("broadcast-only counts must be nil on a message: %+v", sent)
@@ -214,6 +219,7 @@ func TestRetrieveStatus(t *testing.T) {
 	m := newMockAPI(t, always(jsonStub(200, map[string]any{
 		"event_id": "evt-1",
 		"is_sent":  true,
+		"livemode": true,
 		"messages": []any{map[string]any{
 			"client_id":    "cust_001",
 			"phone_number": "+1",
@@ -235,14 +241,55 @@ func TestRetrieveStatus(t *testing.T) {
 	if !status.IsSent || status.EventID != "evt-1" {
 		t.Errorf("status = %+v", status)
 	}
+	if status.Livemode == nil || !*status.Livemode {
+		t.Errorf("Livemode = %v, want true on a live status", status.Livemode)
+	}
 	if len(status.Messages) != 1 || status.Messages[0].ReadCount != 2 || !status.Messages[0].IsRead {
 		t.Errorf("Messages = %+v", status.Messages)
 	}
 }
 
+func TestSendDecodesTestModeLivemodeFalse(t *testing.T) {
+	body := map[string]any{}
+	for k, v := range acceptedMessageWA {
+		body[k] = v
+	}
+	body["livemode"] = false
+	m := newMockAPI(t, always(jsonStub(202, body)))
+	c := newTestClient(t, m)
+
+	sent := mustSend(t, c, MessageSendParams{
+		Channel: "whatsapp",
+		To:      map[string]any{"phone_number": "+15005550001"},
+		Content: map[string]any{"body": "test-mode send"},
+	})
+	if sent.Livemode {
+		t.Error("Livemode = true, want false on a test-mode send")
+	}
+}
+
+func TestRetrieveStatusTestModeLivemodeFalse(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(200, map[string]any{
+		"event_id": "evt-2",
+		"is_sent":  true,
+		"livemode": false,
+		"messages": []any{},
+	})))
+	c := newTestClient(t, m)
+
+	status, err := c.Messages.Retrieve(t.Context(), "evt-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Livemode == nil || *status.Livemode {
+		t.Errorf("Livemode = %v, want false on a test-mode status", status.Livemode)
+	}
+}
+
 var acceptedBatch = map[string]any{
-	"id":     "batch_01J4",
-	"object": "batch",
+	"id":       "batch_01J4",
+	"object":   "batch",
+	"livemode": true,
 	"messages": []any{
 		map[string]any{"id": "m-1", "object": "message", "channel": "sms", "status": "queued"},
 		map[string]any{"id": "m-2", "object": "message", "channel": "email", "status": "queued"},
@@ -272,6 +319,9 @@ func TestSendBatchMinimal(t *testing.T) {
 	if accepted.ID != "batch_01J4" || accepted.Object != "batch" {
 		t.Errorf("accepted = %+v", accepted)
 	}
+	if !accepted.Livemode {
+		t.Error("Livemode = false, want true on a live batch")
+	}
 	// Per-row envelopes must come back in request order.
 	if len(accepted.Messages) != 2 ||
 		accepted.Messages[0].ID != "m-1" || accepted.Messages[1].ID != "m-2" {
@@ -299,6 +349,24 @@ func TestSendBatchMinimal(t *testing.T) {
 	}
 	if got := last.jsonBody(t); !reflect.DeepEqual(got, want) {
 		t.Errorf("body = %v, want %v (null fields must be omitted, rows verbatim)", got, want)
+	}
+}
+
+func TestSendBatchDecodesTestModeLivemodeFalse(t *testing.T) {
+	body := map[string]any{}
+	for k, v := range acceptedBatch {
+		body[k] = v
+	}
+	body["livemode"] = false
+	m := newMockAPI(t, always(jsonStub(202, body)))
+	c := newTestClient(t, m)
+
+	accepted := mustSendBatch(t, c, MessageBatchParams{
+		Channel:  String("sms"),
+		Messages: []map[string]any{{"to": map[string]any{"phone_number": "+15005550002"}}},
+	})
+	if accepted.Livemode {
+		t.Error("Livemode = true, want false on a test-mode batch")
 	}
 }
 

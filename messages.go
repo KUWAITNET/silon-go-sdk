@@ -252,6 +252,10 @@ type BatchAccepted struct {
 	// Object is "batch".
 	Object string `json:"object"`
 
+	// Livemode is false when the batch ran in test mode (an sk_test_
+	// key): no row reaches a provider and nothing is billed.
+	Livemode bool `json:"livemode"`
+
 	// Status is the aggregate batch status ("queued") on the file form;
 	// empty on the inline form.
 	Status string `json:"status,omitempty"`
@@ -275,6 +279,10 @@ type MessageAccepted struct {
 	// audience fan-out.
 	Object string `json:"object"`
 
+	// Livemode is false when the request ran in test mode (an sk_test_
+	// key): nothing reaches a provider and nothing is billed.
+	Livemode bool `json:"livemode"`
+
 	Channel string `json:"channel"`
 	Status  string `json:"status"`
 
@@ -297,8 +305,14 @@ type MessageStatusItem struct {
 
 // MessageStatus is the body of GET /api/v1/messages/{event_id}/.
 type MessageStatus struct {
-	EventID  string              `json:"event_id"`
-	IsSent   bool                `json:"is_sent"`
+	EventID string `json:"event_id"`
+	IsSent  bool   `json:"is_sent"`
+
+	// Livemode is false when the send ran in test mode (an sk_test_
+	// key) — its status transitions are simulated. Nil when the server
+	// does not report a mode.
+	Livemode *bool `json:"livemode,omitempty"`
+
 	Messages []MessageStatusItem `json:"messages"`
 }
 

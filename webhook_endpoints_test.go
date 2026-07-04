@@ -12,6 +12,7 @@ var endpointJSON = map[string]any{
 	"url":            "https://example.com/hooks/silon",
 	"description":    "prod",
 	"enabled_events": []any{"message.failed"},
+	"livemode":       true,
 	"status":         "enabled",
 	"created_at":     "2026-07-01T00:00:00Z",
 }
@@ -46,6 +47,9 @@ func TestWebhookEndpointCreateReturnsOneTimeSecret(t *testing.T) {
 	}
 	if created.ID != "we_01J1ABC" || created.Status != "enabled" {
 		t.Errorf("created = %+v", created)
+	}
+	if !created.Livemode {
+		t.Error("Livemode = false, want true on a default (live) endpoint")
 	}
 	wantCreatedAt := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	if created.CreatedAt == nil || !created.CreatedAt.Equal(wantCreatedAt) {
@@ -82,8 +86,60 @@ func TestWebhookEndpointCreateMinimalDefaultsToAllEvents(t *testing.T) {
 	if len(created.EnabledEvents) != 1 || created.EnabledEvents[0] != "*" {
 		t.Errorf("EnabledEvents = %v", created.EnabledEvents)
 	}
-	// Omitted optional fields must be absent so the server can default.
+	// Omitted optional fields must be absent so the server can default
+	// (livemode in particular defaults to true server-side).
 	want := map[string]any{"url": "https://example.com/h"}
+	if got := m.lastCall(t).jsonBody(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("body = %v, want %v", got, want)
+	}
+}
+
+func TestWebhookEndpointCreateTestModeSerializesLivemodeFalse(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(201, endpointWith(map[string]any{
+		"livemode": false,
+		"secret":   "whsec_test1",
+	}))))
+	c := newTestClient(t, m)
+
+	created, err := c.WebhookEndpoints.Create(t.Context(), WebhookEndpointCreateParams{
+		URL:      "https://example.com/hooks/test",
+		Livemode: Bool(false),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Livemode {
+		t.Error("Livemode = true, want false on a test-mode endpoint")
+	}
+	want := map[string]any{
+		"url":      "https://example.com/hooks/test",
+		"livemode": false,
+	}
+	if got := m.lastCall(t).jsonBody(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("body = %v, want %v", got, want)
+	}
+}
+
+func TestWebhookEndpointCreateLivemodeTrueSentExplicitly(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(201, endpointWith(map[string]any{
+		"secret": "whsec_live1",
+	}))))
+	c := newTestClient(t, m)
+
+	created, err := c.WebhookEndpoints.Create(t.Context(), WebhookEndpointCreateParams{
+		URL:      "https://example.com/hooks/live",
+		Livemode: Bool(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.Livemode {
+		t.Error("Livemode = false, want true")
+	}
+	want := map[string]any{
+		"url":      "https://example.com/hooks/live",
+		"livemode": true,
+	}
 	if got := m.lastCall(t).jsonBody(t); !reflect.DeepEqual(got, want) {
 		t.Errorf("body = %v, want %v", got, want)
 	}
@@ -135,6 +191,9 @@ func TestWebhookEndpointRetrieveNoTrailingSlash(t *testing.T) {
 	}
 	if endpoint.Description != "prod" || endpoint.Object != "webhook_endpoint" {
 		t.Errorf("endpoint = %+v", endpoint)
+	}
+	if !endpoint.Livemode {
+		t.Error("Livemode = false, want true on a live endpoint")
 	}
 }
 

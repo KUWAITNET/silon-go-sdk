@@ -46,6 +46,11 @@ type OTPSendResult struct {
 	// purpose), e.g. "sms".
 	Channel string `json:"channel"`
 
+	// Livemode is false when the OTP was issued by a test-mode (sk_test_)
+	// request — the code is never dispatched and only the magic code
+	// "000000" verifies.
+	Livemode bool `json:"livemode"`
+
 	// TaskIDs are tracking ids for the dispatched send(s); usually one.
 	TaskIDs []string `json:"task_ids,omitempty"`
 }
@@ -66,6 +71,10 @@ type OTPVerifyResult struct {
 
 	// Purpose is the purpose the OTP was issued for.
 	Purpose string `json:"purpose"`
+
+	// Livemode is false when the OTP was issued by a test-mode (sk_test_)
+	// request.
+	Livemode bool `json:"livemode"`
 
 	// VerifiedAt is when verification succeeded.
 	VerifiedAt time.Time `json:"verified_at"`

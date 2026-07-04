@@ -38,6 +38,11 @@ type WebhookEndpoint struct {
 	// ["*"] for all.
 	EnabledEvents []string `json:"enabled_events,omitempty"`
 
+	// Livemode is the endpoint's mode routing, fixed at create time.
+	// true: receives events from live sends only; false: receives events
+	// from test-mode (sk_test_) sends only.
+	Livemode bool `json:"livemode"`
+
 	// Status is "enabled" (receiving deliveries) or "disabled".
 	Status string `json:"status,omitempty"`
 
@@ -89,6 +94,11 @@ type WebhookEndpointCreateParams struct {
 	// EnabledEvents are the event types to deliver. Nil lets the server
 	// default to ["*"] (everything).
 	EnabledEvents []string
+
+	// Livemode fixes the endpoint's mode routing at create time. Nil lets
+	// the server default to true (live events only); silon.Bool(false)
+	// subscribes the endpoint to test-mode (sk_test_) events only.
+	Livemode *bool
 }
 
 // WebhookEndpointUpdateParams are the parameters for
@@ -117,7 +127,9 @@ func (s *WebhookEndpointsService) List(ctx context.Context, params WebhookEndpoi
 // Create subscribes an HTTPS URL to events (POST /api/v1/webhook_endpoints).
 //
 // The response includes the one-time signing secret ("whsec_" prefix) —
-// store it now, it is never returned again.
+// store it now, it is never returned again. Set params.Livemode to
+// silon.Bool(false) to receive test-mode (sk_test_) events instead of
+// live ones — the mode is fixed at create time.
 func (s *WebhookEndpointsService) Create(ctx context.Context, params WebhookEndpointCreateParams) (*WebhookEndpointWithSecret, error) {
 	body := map[string]any{"url": params.URL}
 	if params.Description != nil {
@@ -125,6 +137,9 @@ func (s *WebhookEndpointsService) Create(ctx context.Context, params WebhookEndp
 	}
 	if params.EnabledEvents != nil {
 		body["enabled_events"] = params.EnabledEvents
+	}
+	if params.Livemode != nil {
+		body["livemode"] = *params.Livemode
 	}
 	var out WebhookEndpointWithSecret
 	if err := s.client.post(ctx, webhookEndpointsPath, body, nil, &out); err != nil {

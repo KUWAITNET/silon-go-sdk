@@ -172,6 +172,61 @@ Optional scalar params are pointers — use the helpers `silon.String`,
 `silon.Int`, `silon.Bool`, `silon.Float`. Fields this SDK version does not
 model can be passed via `ExtraBody`, merged into the request body last.
 
+## Test mode
+
+Create an `sk_test_` API key (Settings → API keys) to integrate and CI-test
+without a provider account or a real message. Test-mode requests run the
+full pipeline — validation, scopes, rate limits, idempotency, delivery
+rows, events — but never reach a provider and never bill. Affected
+response models (`MessageAccepted`, `MessageStatus`, `BroadcastAccepted`,
+`Broadcast`, `BatchAccepted`, `OTPSendResult`, `OTPVerifyResult`, `Event`,
+`WebhookEndpoint`) carry a `Livemode` field: `false` for test traffic,
+`true` for live.
+
+Magic recipients force deterministic outcomes in test mode. Statuses
+settle asynchronously a few seconds after the `202`, so polling and
+webhooks behave realistically:
+
+| Recipient | Outcome |
+| --- | --- |
+| `+15005550001` | delivered |
+| `+15005550002` | failed (simulated provider error) |
+| `+15005550009` | reserved for suppression (not yet implemented) |
+| `delivered@silon.test` | delivered |
+| `bounce@silon.test` | failed |
+| `suppressed@silon.test` | reserved for suppression (not yet implemented) |
+| anything else | delivered |
+
+With a **live** key, magic recipients are rejected with a 422
+`test-recipient-in-live` — test fixtures can never leak into real sends.
+
+Test-mode OTPs are never dispatched; the magic code `000000` — and only
+it — verifies:
+
+```go
+sent, err := client.OTP.Send(ctx, silon.OTPSendParams{
+    Purpose: "login",
+    To:      map[string]any{"phone_number": "+15005550001"},
+})
+result, err := client.OTP.Verify(ctx, silon.OTPVerifyParams{
+    OTPID: sent.OTPID,
+    Code:  "000000",
+})
+fmt.Println(result.Verified, result.Livemode) // true false
+```
+
+Webhook endpoints are mode-routed at create time: live endpoints receive
+events from live sends only, and `Livemode: silon.Bool(false)` endpoints
+receive test-mode events only — register one endpoint per mode to consume
+both streams:
+
+```go
+endpoint, err := client.WebhookEndpoints.Create(ctx, silon.WebhookEndpointCreateParams{
+    URL:      "https://ci.example.com/hooks/silon-test",
+    Livemode: silon.Bool(false), // default is true (live events only)
+})
+```
+
 ## Resources
 
 | Resource | Methods |
