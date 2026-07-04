@@ -130,6 +130,10 @@ type Client struct {
 	// WebhookEndpoints manages outbound webhook subscriptions.
 	WebhookEndpoints *WebhookEndpointsService
 
+	// Suppressions manages the workspace's do-not-contact list, enforced
+	// on every send path.
+	Suppressions *SuppressionsService
+
 	// Reports runs activity reports (messages, channels, clients, users,
 	// bulks, subscriptions, AWS usage) and provider balance lookups.
 	Reports *ReportsService
@@ -224,6 +228,7 @@ func NewClient(opts ...Option) (*Client, error) {
 	}
 	c.Events = &EventsService{client: c}
 	c.WebhookEndpoints = &WebhookEndpointsService{client: c}
+	c.Suppressions = &SuppressionsService{client: c}
 	c.Reports = &ReportsService{client: c}
 	c.WhatsAppTemplates = &WhatsAppTemplatesService{client: c}
 	c.Push = &PushService{client: c}

@@ -32,7 +32,8 @@ type BroadcastCreateParams struct {
 	// {"type": "client_ids", "client_ids": [...]} or an inline ad-hoc list
 	// {"type": "recipients", "recipients": [{"phone_number": ...},
 	// {"email": ...}, {"client_id": ...}, ...]} (max 1,000 rows; duplicate
-	// addresses are deduped and counted in SkippedCount).
+	// addresses are deduped into Skipped.Duplicate, suppressed recipients
+	// skipped into Skipped.Suppressed — SkippedCount stays the sum).
 	Audience map[string]any
 
 	// Content is the message content, e.g. {"body": ...} and, for email,
@@ -120,6 +121,25 @@ func (p BroadcastCreateParams) body() map[string]any {
 	return body
 }
 
+// SkippedBreakdown itemises why fan-out recipients were skipped, on the
+// broadcast and batch create envelopes. Keys are always present in the
+// JSON (0 when nothing was skipped in that bucket); the envelope's
+// SkippedCount is their sum.
+type SkippedBreakdown struct {
+	// Suppressed counts recipients on the do-not-contact list — see
+	// SuppressionsService. Fan-outs skip suppressed recipients instead of
+	// erroring.
+	Suppressed int `json:"suppressed"`
+
+	// WrongChannel counts audience members not reachable on the
+	// broadcast's channel.
+	WrongChannel int `json:"wrong_channel"`
+
+	// Duplicate counts duplicate addresses deduped out of an inline
+	// recipients list.
+	Duplicate int `json:"duplicate"`
+}
+
 // BroadcastAccepted is the 202 envelope from POST /api/v1/broadcasts/.
 type BroadcastAccepted struct {
 	// ID is the broadcast id ("br_" prefixed).
@@ -147,6 +167,11 @@ type BroadcastAccepted struct {
 	// unsubscribed, unreachable). Like TargetCount, null (decoded as 0)
 	// on a scheduled envelope until the audience resolves at dispatch.
 	SkippedCount int `json:"skipped_count"`
+
+	// Skipped itemises SkippedCount per reason. Nil exactly when
+	// TargetCount is null (a scheduled envelope whose audience resolves
+	// at dispatch time) — and on servers predating the breakdown.
+	Skipped *SkippedBreakdown `json:"skipped,omitempty"`
 }
 
 // Broadcast is the body of GET /api/v1/broadcasts/{broadcast_id}/ —

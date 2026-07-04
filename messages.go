@@ -65,6 +65,18 @@ type MessageSendParams struct {
 	// ISO-8601 string can be passed via ExtraBody["send_at"] instead.
 	SendAt *time.Time
 
+	// OverrideSuppression set to silon.Bool(true) delivers even when the
+	// recipient is on the suppression list (SuppressionsService) — for
+	// transactional/legal sends, e.g. a receipt owed to an unsubscribed
+	// customer. Single-recipient sends (To) ONLY. It requires the
+	// suppressions:override scope, which is in no scope preset and must
+	// be granted explicitly: without it the request is rejected with a
+	// 403 slug "missing-scope"; sent alongside Audience (or on batches /
+	// broadcasts) it is a 422 slug "override-not-allowed". An overridden
+	// send proceeds and its delivery row is flagged
+	// suppression_overridden: true.
+	OverrideSuppression *bool
+
 	// IdempotencyKey is sent as the Idempotency-Key header. When empty, a
 	// UUIDv4 is generated — the header is ALWAYS sent, and the same value
 	// is replayed on every retry attempt, so a retry can never double-send.
@@ -120,6 +132,9 @@ func (p MessageSendParams) body() (map[string]any, error) {
 	}
 	if p.SendAt != nil {
 		body["send_at"] = p.SendAt.Format(time.RFC3339Nano)
+	}
+	if p.OverrideSuppression != nil {
+		body["override_suppression"] = *p.OverrideSuppression
 	}
 	for k, v := range p.ExtraBody {
 		body[k] = v
@@ -293,8 +308,19 @@ type BatchAccepted struct {
 
 	// Messages holds the per-row envelopes, in request order. It is set
 	// on the inline form only — nil on the file form, where rows expand
-	// asynchronously through the bulk pipeline.
+	// asynchronously through the bulk pipeline. Suppressed rows are
+	// omitted (counted in Skipped.Suppressed instead).
 	Messages []BatchMessage `json:"messages,omitempty"`
+
+	// SkippedCount (inline form only) is how many rows were skipped
+	// rather than queued; nil on the file form, where the breakdown
+	// surfaces on the bulk read side (BulkService.Retrieve) once async
+	// expansion runs — and on servers predating the field.
+	SkippedCount *int `json:"skipped_count,omitempty"`
+
+	// Skipped itemises SkippedCount per reason (inline form only; nil on
+	// the file form and on servers predating the breakdown).
+	Skipped *SkippedBreakdown `json:"skipped,omitempty"`
 }
 
 // MessageAccepted is the 202 envelope from POST /api/v1/messages/.
@@ -322,8 +348,13 @@ type MessageAccepted struct {
 	TargetCount *int `json:"target_count,omitempty"`
 
 	// SkippedCount (broadcast only) is the number of recipients skipped
-	// (unsubscribed / unreachable).
+	// (suppressed / duplicate / unreachable).
 	SkippedCount *int `json:"skipped_count,omitempty"`
+
+	// Skipped (broadcast only) itemises SkippedCount per reason. Nil on
+	// single-recipient envelopes, on a scheduled envelope whose audience
+	// resolves at dispatch time, and on servers predating the breakdown.
+	Skipped *SkippedBreakdown `json:"skipped,omitempty"`
 }
 
 // MessageStatusItem is one recipient row inside a message-status batch.
@@ -363,6 +394,12 @@ type MessageStatus struct {
 // *Error is returned otherwise. An Idempotency-Key header is always sent
 // (auto-generated UUIDv4 when params.IdempotencyKey is empty), which makes
 // automatic retries safe.
+//
+// A single-recipient send to an address on the suppression list
+// (SuppressionsService) is rejected with a 422 slug "recipient-suppressed"
+// — see params.OverrideSuppression for the gated transactional bypass. An
+// Audience fan-out skips suppressed recipients into Skipped.Suppressed
+// instead.
 func (s *MessagesService) Send(ctx context.Context, params MessageSendParams) (*MessageAccepted, error) {
 	body, err := params.body()
 	if err != nil {

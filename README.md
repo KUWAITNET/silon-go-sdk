@@ -2,8 +2,9 @@
 
 Go client for the [Silon](https://silon.tech) messaging platform API — send
 messages on any channel (WhatsApp, SMS, email, push, web push, voice), manage
-CRM contacts and groups, run bulk campaigns, consume events, and verify
-webhooks. Stdlib only — zero third-party dependencies.
+CRM contacts and groups, run bulk campaigns, maintain the do-not-contact
+list, consume events, and verify webhooks. Stdlib only — zero third-party
+dependencies.
 
 ## Installation
 
@@ -124,7 +125,8 @@ for every file shape.
 
 One piece of content fanned out to an audience — a CRM group, explicit
 client ids, or an inline ad-hoc list of raw addresses (max 1,000 rows;
-duplicates are deduped and counted in `SkippedCount`):
+duplicates are deduped, suppressed recipients skipped — `SkippedCount` is
+the total and `Skipped` itemises it per reason):
 
 ```go
 // Email broadcast to a client group
@@ -134,6 +136,9 @@ result, err := client.Broadcasts.Create(ctx, silon.BroadcastCreateParams{
     Content:  map[string]any{"subject": "We saved you a seat", "body": "<h1>Hello</h1>"},
 })
 fmt.Println(result.TargetCount, result.SkippedCount)
+if result.Skipped != nil { // additive breakdown; SkippedCount stays the sum
+    fmt.Println(result.Skipped.Suppressed, result.Skipped.WrongChannel, result.Skipped.Duplicate)
+}
 
 // SMS to an ad-hoc recipient list
 client.Broadcasts.Create(ctx, silon.BroadcastCreateParams{
@@ -228,6 +233,78 @@ Notes:
 - Test-mode (`sk_test_`) scheduled sends simulate on dispatch, like any
   other test-mode traffic.
 
+## Suppressions
+
+A per-workspace do-not-contact list, enforced on **every** send path. A
+row matches on `(address, channel)` or — with no channel — on the address
+across all channels; addresses are stored normalized (compact E.164 /
+lowercase email), so any formatting of the same address matches.
+
+```go
+// Suppress an address on one channel (omit Channel for all channels)
+sup, err := client.Suppressions.Create(ctx, silon.SuppressionCreateParams{
+    Address: "+96550001234",
+    Channel: silon.String("sms"),
+    Reason:  silon.String(silon.SuppressionReasonStop), // default "manual"
+})
+
+// List (cursor-paginated) with optional filters
+page, err := client.Suppressions.List(ctx, silon.SuppressionListParams{
+    Reason: silon.String(silon.SuppressionReasonUnsubscribe),
+})
+for sup, err := range page.All(ctx) {
+    if err != nil {
+        return err
+    }
+    fmt.Println(sup.Address, sup.Reason) // sup.Channel == nil => all channels
+}
+
+// Make the address contactable again
+err = client.Suppressions.Delete(ctx, sup.ID)
+```
+
+`Create` is idempotent by nature: creating a duplicate `(Address,
+Channel)` in the same mode answers `200` with the *existing* suppression —
+never an error — so it sends no `Idempotency-Key`. Reasons: `manual`,
+`unsubscribe`, `hard_bounce`, `stop` (the `silon.SuppressionReason*`
+constants). `List` requires the `suppressions:read` scope; `Create` /
+`Delete` require `suppressions:write`.
+
+Enforcement:
+
+- **Single-recipient sends** (`Messages.Send` with `To`, `OTP.Send`) to a
+  suppressed address are rejected with a 422 `recipient-suppressed`.
+- **Fan-outs** (broadcasts, batch inline rows, batch file/CSV rows, legacy
+  bulk) *skip* suppressed recipients instead — never an error. The
+  broadcast/batch envelopes itemise the skips in the additive `Skipped`
+  breakdown (`Suppressed` / `WrongChannel` / `Duplicate`), with
+  `SkippedCount` staying the sum. Suppressed inline-batch rows are omitted
+  from the per-row `Messages`; the file form reports its breakdown on the
+  bulk read side (`Bulk.Retrieve`) once async expansion runs. `Skipped` is
+  nil on servers predating the breakdown and on scheduled broadcast
+  envelopes whose audience resolves at dispatch time.
+- Suppressions are **mode-scoped**: test keys list/manage/enforce test
+  suppressions only, live keys live ones.
+
+Transactional/legal sends (e.g. a receipt owed to an unsubscribed
+customer) can bypass a suppression per request — single-recipient sends
+only:
+
+```go
+sent, err := client.Messages.Send(ctx, silon.MessageSendParams{
+    Channel:             "email",
+    To:                  map[string]any{"email": "sara@example.com"},
+    Content:             map[string]any{"subject": "Your receipt", "body": "..."},
+    OverrideSuppression: silon.Bool(true),
+})
+```
+
+`OverrideSuppression` requires the `suppressions:override` scope, which is
+in **no** scope preset and must be granted explicitly — without it the
+request is a 403 `missing-scope`; alongside `Audience` (or on batches /
+broadcasts) it is a 422 `override-not-allowed`. An overridden send
+proceeds and its delivery row is flagged `suppression_overridden: true`.
+
 ## Test mode
 
 Create an `sk_test_` API key (Settings → API keys) to integrate and CI-test
@@ -247,11 +324,15 @@ webhooks behave realistically:
 | --- | --- |
 | `+15005550001` | delivered |
 | `+15005550002` | failed (simulated provider error) |
-| `+15005550009` | reserved for suppression (not yet implemented) |
+| `+15005550009` | always suppressed (no suppression row needed) |
 | `delivered@silon.test` | delivered |
 | `bounce@silon.test` | failed |
-| `suppressed@silon.test` | reserved for suppression (not yet implemented) |
+| `suppressed@silon.test` | always suppressed (no suppression row needed) |
 | anything else | delivered |
+
+The always-suppressed recipients behave exactly like a real suppression:
+a single send is rejected with a 422 `recipient-suppressed`, and a
+fan-out skips them into the envelope's `Skipped.Suppressed` counter.
 
 With a **live** key, magic recipients are rejected with a 422
 `test-recipient-in-live` — test fixtures can never leak into real sends.
@@ -296,6 +377,7 @@ endpoint, err := client.WebhookEndpoints.Create(ctx, silon.WebhookEndpointCreate
 | `client.Reports` | `Messages`, `Channels`, `Clients`, `Users`, `Bulks`, `SpecificBulks`, `Subscriptions`, `AWSUsage`, `Balance` |
 | `client.WhatsAppTemplates` | `List`, `Retrieve` |
 | `client.WebhookEndpoints` | `List` (paginated), `Create`, `Retrieve`, `Update`, `Delete` |
+| `client.Suppressions` | `List` (paginated), `Create`, `Delete` |
 | `client.Events` | `List` (paginated), `Retrieve` |
 | `client.Push` | `SubscribeAndroid`, `SubscribeIOS`, `UpsertDevices`, `MarkRead`, `ListNotifications`, `SubscribeWeb` |
 | `client.Profile` | `Retrieve`, `Update`, `Replace` |
@@ -311,8 +393,9 @@ stay current as the CSV ingestion path.
 ## Pagination
 
 Cursor-paginated lists (`Events.List`, `WebhookEndpoints.List`,
-`Broadcasts.Deliveries`) return a `*silon.Page[T]` you can walk manually or
-drain with the lazy range-over-func iterator `All`:
+`Suppressions.List`, `Broadcasts.Deliveries`) return a `*silon.Page[T]`
+you can walk manually or drain with the lazy range-over-func iterator
+`All`:
 
 ```go
 page, err := client.Events.List(ctx, silon.EventListParams{
