@@ -9,13 +9,13 @@ dependencies.
 ## Installation
 
 ```bash
-go get github.com/silon-tech/silon-go-sdk
+go get github.com/KUWAITNET/silon-go-sdk
 ```
 
 Requires Go 1.24+. The module depends only on the Go standard library.
 
 ```go
-import "github.com/silon-tech/silon-go-sdk"
+import "github.com/KUWAITNET/silon-go-sdk"
 ```
 
 ## Quickstart
