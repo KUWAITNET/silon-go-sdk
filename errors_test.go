@@ -257,6 +257,48 @@ func TestRetryAfterOnlyOn429(t *testing.T) {
 	}
 }
 
+func TestRetryableReadFromStandardBody(t *testing.T) {
+	// A 429 standard body advertises retryable:true; read verbatim.
+	m := newMockAPI(t, always(jsonStub(429, map[string]any{
+		"type":      "throttled",
+		"errors":    []any{map[string]any{"code": "throttled", "detail": "Slow down.", "attr": nil}},
+		"retryable": true,
+	})))
+	apiErr := asAPIError(t, retrieveErr(t, m))
+	if apiErr.Retryable == nil || !*apiErr.Retryable {
+		t.Errorf("Retryable = %v, want true", apiErr.Retryable)
+	}
+}
+
+func TestRetryableFalseNotRecomputedFromStatus(t *testing.T) {
+	// A 409 with retryable:false must stay false — never recomputed from
+	// the status code (an idempotency-conflict 409 is not retryable).
+	m := newMockAPI(t, always(jsonStub(409, map[string]any{
+		"type":      "https://acme.silon.tech/docs/errors/idempotency-conflict",
+		"title":     "Conflict",
+		"status":    409,
+		"detail":    "A different request already used this Idempotency-Key.",
+		"retryable": false,
+		"field":     nil,
+	})))
+	apiErr := asAPIError(t, retrieveErr(t, m))
+	if apiErr.Retryable == nil {
+		t.Fatal("Retryable = nil, want a value")
+	}
+	if *apiErr.Retryable {
+		t.Error("Retryable = true, want false (must be read verbatim, not recomputed)")
+	}
+}
+
+func TestRetryableAbsentIsNil(t *testing.T) {
+	// A legacy / non-v1 body omitting "retryable" leaves it nil.
+	m := newMockAPI(t, always(jsonStub(400, standard400)))
+	apiErr := asAPIError(t, retrieveErr(t, m))
+	if apiErr.Retryable != nil {
+		t.Errorf("Retryable = %v, want nil when the body omits the field", *apiErr.Retryable)
+	}
+}
+
 func TestPredicatesRejectNonAPIErrors(t *testing.T) {
 	for _, err := range []error{
 		errors.New("plain"),

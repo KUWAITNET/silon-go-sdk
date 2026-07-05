@@ -62,6 +62,24 @@ client.Messages.Send(ctx, silon.MessageSendParams{
 })
 ```
 
+Look up delivery status with `Messages.Retrieve`. The modern shape carries
+`ID`, `Object`, `Channel` (nullable) and a typed `Timeline` — the ordered
+status transitions (`{Status, At, Provider}`, ascending by `At`). A single
+send's `Timeline` runs `queued → sent → delivered` when the channel reports
+receipts; `delivered` appears **only** in the timeline, never as the
+top-level `Status`:
+
+```go
+status, err := client.Messages.Retrieve(ctx, sent.ID)
+for _, step := range status.Timeline {
+    fmt.Println(step.Status, step.At) // queued, sent, delivered, ...
+}
+```
+
+The legacy `EventID`, `IsSent` and per-recipient `Messages` fields are
+still populated but **deprecated** (gopls / staticcheck flag them) — prefer
+`ID`, `Status` and `Timeline`.
+
 ## Batches
 
 Many independent, personalised messages in one call — use it when every
@@ -305,6 +323,66 @@ request is a 403 `missing-scope`; alongside `Audience` (or on batches /
 broadcasts) it is a 422 `override-not-allowed`. An overridden send
 proceeds and its delivery row is flagged `suppression_overridden: true`.
 
+## Templates
+
+Slug-keyed message templates with an **immutable version spine** — the same
+rows a send renders for `Template: {"slug": ...}`. Any change to a content
+field (`Subject` / `Body` / `BodyMd`) mints an immutable version `N+1`;
+`Channel` is metadata and never bumps the version.
+
+```go
+tmpl, err := client.Templates.Create(ctx, silon.TemplateCreateParams{
+    Slug:    "order-shipped",
+    Channel: silon.String("email"),
+    Subject: silon.String("Your order shipped"),
+    BodyMd:  silon.String("Hi {{ name }}, it's on the way."),
+})
+// tmpl.Version == 1, tmpl.Versions == []int{1}
+
+updated, err := client.Templates.Update(ctx, "order-shipped", silon.TemplateUpdateParams{
+    Subject: silon.String("Shipped today"),
+}) // mints version 2
+
+page, err := client.Templates.List(ctx, silon.TemplateListParams{Q: silon.String("order")})
+err = client.Templates.Delete(ctx, "order-shipped") // soft archive
+```
+
+Pin an older revision on any send path (`Messages.Send`,
+`Broadcasts.Create`, `Messages.SendBatch` row/defaults) with an optional
+integer `version`; omit it to render the latest:
+
+```go
+sent, err := client.Messages.Send(ctx, silon.MessageSendParams{
+    Channel:  "email",
+    To:       map[string]any{"client_id": "cust_001"},
+    Template: map[string]any{"slug": "order-shipped", "version": 1},
+})
+```
+
+An unknown pinned version is a 422 `template-version-not-found`. `List` /
+`Retrieve` require the `templates:read` scope; `Create` / `Update` /
+`Delete` require `templates:write`. Delete is a soft archive: the slug
+stays reserved (re-create is a 409 `template-exists`) and archived slugs
+read as `template-not-found` everywhere.
+
+## Webhook testing and delivery attempts
+
+`WebhookEndpoints.Test` synchronously POSTs a signed `ping` to the endpoint
+and returns the outcome — a failing sink is **not** an error (the result
+carries `Delivered: false` and the reason in `Error`):
+
+```go
+result, err := client.WebhookEndpoints.Test(ctx, endpoint.ID)
+if err != nil { /* auth / unknown id only */ }
+fmt.Println(result.Delivered, result.ResponseStatus, result.LatencyMs, result.Error)
+```
+
+`WebhookEndpoints.ListAttempts` pages through the `(event, endpoint)`
+delivery ledger (newest first) — each row is a `webhook_attempt` with
+`Attempts`, `ResponseStatus` (nil when the endpoint never answered), `OK`,
+`Error`, and the attempt timestamps. Test pings are never persisted and
+never appear here.
+
 ## Test mode
 
 Create an `sk_test_` API key (Settings → API keys) to integrate and CI-test
@@ -376,7 +454,8 @@ endpoint, err := client.WebhookEndpoints.Create(ctx, silon.WebhookEndpointCreate
 | `client.Bulk` | `List`, `Retrieve`, `Send` (deprecated), `Files.List`, `Files.Upload`, `Recipients.Retrieve` |
 | `client.Reports` | `Messages`, `Channels`, `Clients`, `Users`, `Bulks`, `SpecificBulks`, `Subscriptions`, `AWSUsage`, `Balance` |
 | `client.WhatsAppTemplates` | `List`, `Retrieve` |
-| `client.WebhookEndpoints` | `List` (paginated), `Create`, `Retrieve`, `Update`, `Delete` |
+| `client.Templates` | `List` (paginated), `Create`, `Retrieve`, `Update`, `Delete` |
+| `client.WebhookEndpoints` | `List` (paginated), `Create`, `Retrieve`, `Update`, `Delete`, `Test`, `ListAttempts` (paginated) |
 | `client.Suppressions` | `List` (paginated), `Create`, `Delete` |
 | `client.Events` | `List` (paginated), `Retrieve` |
 | `client.Push` | `SubscribeAndroid`, `SubscribeIOS`, `UpsertDevices`, `MarkRead`, `ListNotifications`, `SubscribeWeb` |
@@ -393,7 +472,8 @@ stay current as the CSV ingestion path.
 ## Pagination
 
 Cursor-paginated lists (`Events.List`, `WebhookEndpoints.List`,
-`Suppressions.List`, `Broadcasts.Deliveries`) return a `*silon.Page[T]`
+`WebhookEndpoints.ListAttempts`, `Templates.List`, `Suppressions.List`,
+`Broadcasts.Deliveries`) return a `*silon.Page[T]`
 you can walk manually or drain with the lazy range-over-func iterator
 `All`:
 
@@ -455,6 +535,12 @@ Predicates: `IsBadRequest` (400), `IsAuthentication` (401),
 idempotency-key reuse), `IsGone` (410, expired OTP), `IsUnprocessableEntity`
 (422), `IsRateLimit` (429, with `RetryAfter` parsed from `Retry-After` /
 `RateLimit-Reset`), `IsInternalServer` (5xx).
+
+`APIError.Retryable` (`*bool`) mirrors the error body's `retryable` flag:
+`true` iff retrying the *same* request could ever succeed (429, 5xx, or an
+in-flight idempotency twin), `false` for every other 4xx. It is read
+verbatim from the body — never recomputed from the status code — and is
+`nil` when a legacy / non-v1 body omits the field.
 
 Transport failures (the request never produced an HTTP response) are
 `*silon.ConnectionError` — its `Timeout` field is true for timeouts and

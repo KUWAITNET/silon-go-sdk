@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 var acceptedMessageWA = map[string]any{
@@ -246,6 +247,107 @@ func TestRetrieveStatus(t *testing.T) {
 	}
 	if len(status.Messages) != 1 || status.Messages[0].ReadCount != 2 || !status.Messages[0].IsRead {
 		t.Errorf("Messages = %+v", status.Messages)
+	}
+}
+
+func TestRetrieveStatusModernShapeWithTimeline(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(200, map[string]any{
+		"id":       "9f3e8a82",
+		"object":   "message",
+		"channel":  "sms",
+		"livemode": true,
+		"status":   "sent",
+		"timeline": []any{
+			map[string]any{"status": "queued", "at": "2026-07-04T12:00:00Z"},
+			map[string]any{"status": "sent", "at": "2026-07-04T12:00:01Z", "provider": "twilio"},
+			map[string]any{"status": "delivered", "at": "2026-07-04T12:00:05Z", "provider": "twilio"},
+		},
+		// Legacy keys still present for backward compatibility.
+		"event_id": "9f3e8a82",
+		"is_sent":  true,
+	})))
+	c := newTestClient(t, m)
+
+	status, err := c.Messages.Retrieve(t.Context(), "9f3e8a82")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Modern keys.
+	if status.ID != "9f3e8a82" || status.Object != "message" {
+		t.Errorf("status = %+v", status)
+	}
+	if status.Channel == nil || *status.Channel != "sms" {
+		t.Errorf("Channel = %v, want sms", status.Channel)
+	}
+	if len(status.Timeline) != 3 {
+		t.Fatalf("Timeline = %+v", status.Timeline)
+	}
+	// Entries parse fully and stay in order.
+	first := status.Timeline[0]
+	if first.Status != "queued" || first.Provider != nil {
+		t.Errorf("Timeline[0] = %+v", first)
+	}
+	wantAt := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	if first.At == nil || !first.At.Equal(wantAt) {
+		t.Errorf("Timeline[0].At = %v, want %v", first.At, wantAt)
+	}
+	// "delivered" appears only in the timeline (never the top-level status).
+	last := status.Timeline[2]
+	if last.Status != "delivered" || last.Provider == nil || *last.Provider != "twilio" {
+		t.Errorf("Timeline[2] = %+v", last)
+	}
+	if status.Status == "delivered" {
+		t.Error("top-level Status = delivered, must never happen (per-recipient granularity is timeline-only)")
+	}
+	// Deprecated legacy keys still decode.
+	if status.EventID != "9f3e8a82" || !status.IsSent {
+		t.Errorf("legacy fields = %q / %v", status.EventID, status.IsSent)
+	}
+}
+
+func TestRetrieveStatusScheduledTimeline(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(200, map[string]any{
+		"id":       "sch_1",
+		"object":   "message",
+		"channel":  nil,
+		"status":   "scheduled",
+		"send_at":  "2026-08-01T09:00:00Z",
+		"timeline": []any{map[string]any{"status": "scheduled", "at": "2026-07-04T12:00:00Z"}},
+	})))
+	c := newTestClient(t, m)
+
+	status, err := c.Messages.Retrieve(t.Context(), "sch_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Status != "scheduled" || len(status.Timeline) != 1 || status.Timeline[0].Status != "scheduled" {
+		t.Errorf("status = %+v", status)
+	}
+	// channel: null decodes as nil.
+	if status.Channel != nil {
+		t.Errorf("Channel = %v, want nil when the rows don't agree on one", *status.Channel)
+	}
+	if status.SendAt == nil {
+		t.Error("SendAt = nil, want the scheduled dispatch time")
+	}
+}
+
+func TestSendPinsTemplateVersion(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedMessageWA)))
+	c := newTestClient(t, m)
+
+	mustSend(t, c, MessageSendParams{
+		Channel:  "email",
+		To:       map[string]any{"email": "a@b.com"},
+		Template: map[string]any{"slug": "order-shipped", "version": 2},
+	})
+	want := map[string]any{
+		"channel":  "email",
+		"to":       map[string]any{"email": "a@b.com"},
+		"template": map[string]any{"slug": "order-shipped", "version": float64(2)},
+	}
+	if got := m.lastCall(t).jsonBody(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("body = %v, want %v (pinned template version must pass through)", got, want)
 	}
 }
 

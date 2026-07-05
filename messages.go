@@ -39,7 +39,11 @@ type MessageSendParams struct {
 	// {"subject": ...}.
 	Content map[string]any
 
-	// Template references a stored message template.
+	// Template references a stored message template by slug, e.g.
+	// {"slug": "order-shipped", "variables": {...}}. Pin an older immutable
+	// revision with an optional integer "version": {"slug": ...,
+	// "version": 2}; omit it to render the latest. An unknown pinned
+	// version is a 422 slug "template-version-not-found".
 	Template map[string]any
 
 	Provider    *string
@@ -177,7 +181,10 @@ type MessageBatchParams struct {
 	// for email, {"subject": ...}.
 	Content map[string]any
 
-	// Template is the default stored-message-template reference.
+	// Template is the default stored-message-template reference by slug,
+	// e.g. {"slug": "order-shipped", "variables": {...}}. Pin an older
+	// immutable revision with an optional integer "version": {"slug": ...,
+	// "version": 2}; omit it to render the latest.
 	Template map[string]any
 
 	Provider    *string
@@ -366,10 +373,32 @@ type MessageStatusItem struct {
 	ReadCount   int    `json:"read_count"`
 }
 
+// MessageTimelineEntry is one attested status transition in a message's
+// Timeline, in ascending order by At.
+type MessageTimelineEntry struct {
+	// Status is the lifecycle stage this entry attests: "scheduled",
+	// "queued", "sent", "delivered", "failed" or "canceled". "delivered"
+	// is per-recipient granularity that appears ONLY here (never as the
+	// top-level MessageStatus.Status) and only on single-recipient sends
+	// whose channel reports receipts.
+	Status string `json:"status"`
+
+	// At is when the transition happened.
+	At *time.Time `json:"at,omitempty"`
+
+	// Provider is the provider that carried the send, when known (e.g.
+	// "twilio"); nil otherwise.
+	Provider *string `json:"provider,omitempty"`
+}
+
 // MessageStatus is the body of GET /api/v1/messages/{event_id}/.
 type MessageStatus struct {
-	EventID string `json:"event_id"`
-	IsSent  bool   `json:"is_sent"`
+	// ID is the message id the status was looked up by (same value as the
+	// path id).
+	ID string `json:"id"`
+
+	// Object is always "message".
+	Object string `json:"object,omitempty"`
 
 	// Livemode is false when the send ran in test mode (an sk_test_
 	// key) — its status transitions are simulated. Nil when the server
@@ -379,12 +408,39 @@ type MessageStatus struct {
 	// Status is the aggregate lifecycle status: "scheduled" before a
 	// SendAt message dispatches ("canceled" after a successful Cancel),
 	// then "queued" while any row is in flight, then "sent" ("failed"
-	// when every row failed).
+	// when every row failed). "delivered" never appears here — only in
+	// Timeline.
 	Status string `json:"status,omitempty"`
+
+	// Channel is the channel slug the send was routed to (e.g. "sms",
+	// "whatsapp"); nil when it cannot be derived from the delivery rows.
+	Channel *string `json:"channel,omitempty"`
 
 	// SendAt (scheduled sends only) is when the send will dispatch.
 	SendAt *time.Time `json:"send_at,omitempty"`
 
+	// Timeline is the ordered list of attested status transitions,
+	// ascending by At. A single-recipient send carries the full journey
+	// (queued -> sent -> delivered when the channel reports receipts); a
+	// scheduled send answers [{Status: "scheduled", At}] until dispatch.
+	Timeline []MessageTimelineEntry `json:"timeline,omitempty"`
+
+	// EventID is a legacy alias of ID, still returned for backward
+	// compatibility.
+	//
+	// Deprecated: use ID.
+	EventID string `json:"event_id"`
+
+	// IsSent is a legacy aggregate over the batch (true once every row has
+	// left pending/queued without ending in failed).
+	//
+	// Deprecated: read the aggregate Status (or Timeline) instead.
+	IsSent bool `json:"is_sent"`
+
+	// Messages holds the legacy per-recipient rows.
+	//
+	// Deprecated: read Timeline (and, for a fan-out, BroadcastsService)
+	// instead.
 	Messages []MessageStatusItem `json:"messages"`
 }
 

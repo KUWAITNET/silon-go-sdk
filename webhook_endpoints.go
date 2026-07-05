@@ -82,6 +82,90 @@ func (p WebhookEndpointListParams) values() url.Values {
 	return q
 }
 
+// WebhookEndpointTestResult is the result of a synchronous test ping
+// (WebhookEndpointsService.Test). A failing sink is NOT an HTTP error —
+// the call returns a result with Delivered false and the reason in Error.
+type WebhookEndpointTestResult struct {
+	// Delivered is true when the endpoint answered with a 2xx status.
+	Delivered bool `json:"delivered"`
+
+	// ResponseStatus is the HTTP status the endpoint answered with; nil
+	// when no response arrived (timeout, connection refused, DNS failure).
+	ResponseStatus *int `json:"response_status,omitempty"`
+
+	// LatencyMs is the round-trip time of the ping in milliseconds.
+	LatencyMs int `json:"latency_ms"`
+
+	// Error is nil on success; otherwise "HTTP <status>" for a non-2xx
+	// answer, or the transport failure (e.g. a timeout message).
+	Error *string `json:"error,omitempty"`
+}
+
+// WebhookAttempt is one (event, endpoint) delivery ledger row returned by
+// WebhookEndpointsService.ListAttempts.
+type WebhookAttempt struct {
+	// ID is the opaque attempt id, "wha_" prefixed.
+	ID string `json:"id"`
+
+	// Object is always the string "webhook_attempt".
+	Object string `json:"object,omitempty"`
+
+	// EventID is the id of the delivered event ("evt_" prefixed) — fetch
+	// it via EventsService.Retrieve.
+	EventID string `json:"event_id"`
+
+	// EventType is the type of the delivered event, e.g.
+	// "message.delivered".
+	EventType string `json:"event_type"`
+
+	// Attempts is how many delivery attempts have been made so far.
+	Attempts int `json:"attempts"`
+
+	// ResponseStatus is the HTTP status of the most recent attempt; nil
+	// when the endpoint never answered (timeout / connection failure).
+	ResponseStatus *int `json:"response_status,omitempty"`
+
+	// OK is true once an attempt got a 2xx answer (delivery succeeded).
+	OK bool `json:"ok"`
+
+	// Error is the failure reason of the most recent attempt ("HTTP
+	// <status>" or a transport error); nil when the delivery succeeded.
+	Error *string `json:"error,omitempty"`
+
+	// LastAttemptAt is when the most recent attempt ran; nil before the
+	// first attempt.
+	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
+
+	// NextAttemptAt is when the next retry is scheduled; nil when the
+	// delivery is settled (succeeded, or retries exhausted).
+	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
+
+	// Created is when the delivery was first enqueued.
+	Created *time.Time `json:"created,omitempty"`
+}
+
+// WebhookAttemptListParams are the optional cursor-pagination parameters
+// for WebhookEndpointsService.ListAttempts. Nil fields are omitted from
+// the query.
+type WebhookAttemptListParams struct {
+	// Cursor resumes listing from an opaque pagination cursor.
+	Cursor *string
+
+	// Limit caps the page size.
+	Limit *int
+}
+
+func (p WebhookAttemptListParams) values() url.Values {
+	q := url.Values{}
+	if p.Cursor != nil {
+		q.Set("cursor", *p.Cursor)
+	}
+	if p.Limit != nil {
+		q.Set("limit", strconv.Itoa(*p.Limit))
+	}
+	return q
+}
+
 // WebhookEndpointCreateParams are the parameters for
 // WebhookEndpointsService.Create. Nil fields are omitted from the JSON.
 type WebhookEndpointCreateParams struct {
@@ -187,4 +271,31 @@ func (s *WebhookEndpointsService) Update(ctx context.Context, endpointID string,
 // 204 on success).
 func (s *WebhookEndpointsService) Delete(ctx context.Context, endpointID string) error {
 	return s.client.delete(ctx, webhookEndpointsPath+"/"+url.PathEscape(endpointID))
+}
+
+// Test synchronously POSTs a signed "ping" envelope to the endpoint URL
+// and returns the delivery result (POST /api/v1/webhook_endpoints/
+// {endpoint_id}/test — no trailing slash, no request body).
+//
+// A failing sink is NOT an HTTP error: the call succeeds with
+// result.Delivered false and the reason in result.Error. The endpoint id
+// must match the key's mode (a live key tests livemode-true endpoints, a
+// test key livemode-false ones); a mode mismatch or unknown id is a 404
+// slug "resource-not-found". Test pings are never persisted and never
+// appear in ListAttempts. Requires the webhooks:write scope.
+func (s *WebhookEndpointsService) Test(ctx context.Context, endpointID string) (*WebhookEndpointTestResult, error) {
+	var out WebhookEndpointTestResult
+	if err := s.client.post(ctx, webhookEndpointsPath+"/"+url.PathEscape(endpointID)+"/test", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListAttempts pages through the (event, endpoint) delivery ledger for one
+// endpoint, newest first (GET /api/v1/webhook_endpoints/{endpoint_id}/
+// attempts — no trailing slash; cursor-paginated). An unknown endpoint id
+// is a 404 slug "resource-not-found". Requires the webhooks:read scope.
+func (s *WebhookEndpointsService) ListAttempts(ctx context.Context, endpointID string, params WebhookAttemptListParams) (*Page[WebhookAttempt], error) {
+	path := webhookEndpointsPath + "/" + url.PathEscape(endpointID) + "/attempts"
+	return fetchPage[WebhookAttempt](ctx, s.client, path, params.values())
 }

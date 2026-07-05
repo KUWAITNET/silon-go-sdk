@@ -40,7 +40,10 @@ type BroadcastCreateParams struct {
 	// {"subject": ...}.
 	Content map[string]any
 
-	// Template references a stored message template.
+	// Template references a stored message template by slug, e.g.
+	// {"slug": "order-shipped", "variables": {...}}. Pin an older immutable
+	// revision with an optional integer "version": {"slug": ...,
+	// "version": 2}; omit it to render the latest.
 	Template map[string]any
 
 	Provider    *string

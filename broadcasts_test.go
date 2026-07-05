@@ -250,6 +250,25 @@ func TestBroadcastCreateMinimal(t *testing.T) {
 	}
 }
 
+func TestBroadcastCreatePinsTemplateVersion(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(202, acceptedBroadcastCreate)))
+	c := newTestClient(t, m)
+
+	mustCreateBroadcast(t, c, BroadcastCreateParams{
+		Channel:  "email",
+		Audience: map[string]any{"type": "client_group", "slug": "vip"},
+		Template: map[string]any{"slug": "order-shipped", "version": 2},
+	})
+	want := map[string]any{
+		"channel":  "email",
+		"audience": map[string]any{"type": "client_group", "slug": "vip"},
+		"template": map[string]any{"slug": "order-shipped", "version": float64(2)},
+	}
+	if got := m.lastCall(t).jsonBody(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("body = %v, want %v (pinned template version must pass through)", got, want)
+	}
+}
+
 func TestBroadcastCreateDecodesTestModeLivemodeFalse(t *testing.T) {
 	body := map[string]any{}
 	for k, v := range acceptedBroadcastCreate {

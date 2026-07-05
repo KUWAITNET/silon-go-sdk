@@ -141,6 +141,10 @@ type Client struct {
 	// WhatsAppTemplates lists approved WhatsApp templates.
 	WhatsAppTemplates *WhatsAppTemplatesService
 
+	// Templates manages slug-keyed message templates with an immutable
+	// version spine.
+	Templates *TemplatesService
+
 	// Push registers mobile / web push devices and reads the legacy
 	// native notification feeds.
 	Push *PushService
@@ -231,6 +235,7 @@ func NewClient(opts ...Option) (*Client, error) {
 	c.Suppressions = &SuppressionsService{client: c}
 	c.Reports = &ReportsService{client: c}
 	c.WhatsAppTemplates = &WhatsAppTemplatesService{client: c}
+	c.Templates = &TemplatesService{client: c}
 	c.Push = &PushService{client: c}
 	c.Profile = &ProfileService{client: c}
 	c.Auth = &AuthService{client: c}

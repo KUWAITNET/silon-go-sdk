@@ -72,6 +72,13 @@ type APIError struct {
 	// RetryAfter is the advertised backoff in seconds, parsed from the
 	// Retry-After / RateLimit-Reset headers. Set on 429 responses only.
 	RetryAfter *float64
+	// Retryable mirrors the error body's top-level "retryable" bool: true
+	// iff retrying the SAME request could ever succeed (HTTP 429, 5xx, or an
+	// in-flight idempotency twin), false for every other 4xx (validation,
+	// auth, permission, not-found, conflict, gone). It is read verbatim from
+	// the body — never recomputed from the status code — and is nil when a
+	// legacy / non-v1 error body omits the field.
+	Retryable *bool
 	// Message is the human-readable summary: "attr: detail" of the first
 	// error, else its detail, else "HTTP <code>: <reason>".
 	Message string
@@ -159,11 +166,18 @@ func newAPIError(resp *http.Response, body []byte) *APIError {
 
 	var errorType string
 	var details []ErrorDetail
+	var retryable *bool
 	message := ""
 
 	if obj, ok := parsed.(map[string]any); ok {
 		if t, ok := obj["type"].(string); ok {
 			errorType = t
+		}
+		// Top-level "retryable" is present on both v1 body shapes; read it
+		// verbatim (never recomputed from the status code) and leave it nil
+		// when a legacy / non-v1 body omits it.
+		if rb, ok := obj["retryable"].(bool); ok {
+			retryable = &rb
 		}
 		if rawErrors, ok := obj["errors"].([]any); ok {
 			// Standard DRF shape: {"type": ..., "errors": [{code, detail, attr}]}
@@ -216,6 +230,7 @@ func newAPIError(resp *http.Response, body []byte) *APIError {
 		RequestID:  resp.Header.Get("X-Request-Id"),
 		ErrorType:  errorType,
 		Errors:     details,
+		Retryable:  retryable,
 		Body:       raw,
 		Message:    message,
 	}
