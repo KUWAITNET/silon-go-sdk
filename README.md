@@ -449,8 +449,8 @@ endpoint, err := client.WebhookEndpoints.Create(ctx, silon.WebhookEndpointCreate
 | `client.Messages` | `Send`, `SendBatch`, `Retrieve`, `Cancel` |
 | `client.Broadcasts` | `Create`, `Retrieve`, `Deliveries` (paginated), `Cancel` |
 | `client.OTP` | `Send`, `Verify` |
-| `client.Clients` | `List`, `Create`, `Retrieve`, `Update`, `Replace`, `Delete` |
-| `client.ClientGroups` | `List`, `Create`, `Retrieve`, `Update`, `Replace`, `Delete` |
+| `client.Clients` | `ListPage` (paginated), `List` (deprecated), `Create`, `Retrieve`, `Update`, `Replace`, `Delete` |
+| `client.ClientGroups` | `ListPage` (paginated), `List` (deprecated), `Create`, `Retrieve`, `Update`, `Replace`, `Delete` |
 | `client.Bulk` | `List`, `Retrieve`, `Send` (deprecated), `Files.List`, `Files.Upload`, `Recipients.Retrieve` |
 | `client.Reports` | `Messages`, `Channels`, `Clients`, `Users`, `Bulks`, `SpecificBulks`, `Subscriptions`, `AWSUsage`, `Balance` |
 | `client.WhatsAppTemplates` | `List`, `Retrieve` |
@@ -463,17 +463,28 @@ endpoint, err := client.WebhookEndpoints.Create(ctx, silon.WebhookEndpointCreate
 | `client.Auth` | `Signup`, `Login` (deprecated) |
 
 Deprecated operations (`Bulk.Send`, `Push.ListNotifications`,
-`Push.SubscribeWeb`, `Auth.Login`) carry Go's standard `// Deprecated:`
-doc-comment marker, which gopls and staticcheck surface at the call site.
-`Bulk.Send`'s successor for every shape is `Messages.SendBatch`
-(inline rows or a saved CSV via `File`); `Bulk.Files.Upload` / `Files.List`
-stay current as the CSV ingestion path.
+`Push.SubscribeWeb`, `Auth.Login`, `Clients.List`, `ClientGroups.List`)
+carry Go's standard `// Deprecated:` doc-comment marker, which gopls and
+staticcheck surface at the call site. `Bulk.Send`'s successor for every
+shape is `Messages.SendBatch` (inline rows or a saved CSV via `File`);
+`Bulk.Files.Upload` / `Files.List` stay current as the CSV ingestion path.
+
+**CRM list grammar (C2).** The canonical CRM contacts and groups routes are
+now plural and cursor-paginated (`/api/v1/crm/clients/`,
+`/api/v1/crm/groups/`). `Clients.ListPage` / `ClientGroups.ListPage` are the
+new paginated methods and return a `*silon.Page[T]`. The pre-C2
+`Clients.List` / `ClientGroups.List` still work unchanged — they return a
+bare `[]T` off the frozen singular routes and are safe for existing
+`for _, x := range` / `len` / index call sites — but are now marked
+deprecated in favour of `ListPage`. All CRM CRUD (`Create`, `Retrieve`,
+`Update`, `Replace`, `Delete`) targets the canonical plural routes.
 
 ## Pagination
 
 Cursor-paginated lists (`Events.List`, `WebhookEndpoints.List`,
 `WebhookEndpoints.ListAttempts`, `Templates.List`, `Suppressions.List`,
-`Broadcasts.Deliveries`) return a `*silon.Page[T]`
+`Broadcasts.Deliveries`, `Clients.ListPage`, `ClientGroups.ListPage`)
+return a `*silon.Page[T]`
 you can walk manually or drain with the lazy range-over-func iterator
 `All`:
 

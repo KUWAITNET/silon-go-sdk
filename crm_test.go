@@ -34,12 +34,19 @@ func TestClientsList(t *testing.T) {
 	m := newMockAPI(t, always(jsonStub(200, []any{crmClientResponse, second})))
 	c := newTestClient(t, m)
 
+	// Back-compat lock: the pre-C2 List() call site must keep compiling
+	// (returns a bare []ClientProfile — for/range, len, index all work) and
+	// must keep hitting the FROZEN singular route that answers a bare array.
 	clients, err := c.Clients.List(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(clients) != 2 {
 		t.Fatalf("len = %d, want 2", len(clients))
+	}
+	var ids []string
+	for _, cl := range clients { // legacy iteration shape must still work
+		ids = append(ids, cl.ClientID)
 	}
 	if clients[0].ClientID != "cust_001" || clients[1].ClientID != "cust_002" {
 		t.Errorf("clients = %+v", clients)
@@ -71,7 +78,7 @@ func TestClientsCreateDropsOmittedFields(t *testing.T) {
 	}
 
 	last := m.lastCall(t)
-	if last.method != "POST" || last.path != "/api/v1/crm/client/" {
+	if last.method != "POST" || last.path != "/api/v1/crm/clients/" {
 		t.Errorf("%s %s", last.method, last.path)
 	}
 	want := map[string]any{
@@ -96,7 +103,7 @@ func TestClientsRetrieve(t *testing.T) {
 		t.Errorf("Email = %q", got.Email)
 	}
 	last := m.lastCall(t)
-	if last.method != "GET" || last.path != "/api/v1/crm/client/cust_001/" {
+	if last.method != "GET" || last.path != "/api/v1/crm/clients/cust_001/" {
 		t.Errorf("%s %s", last.method, last.path)
 	}
 }
@@ -119,7 +126,7 @@ func TestClientsUpdateUsesPatchAndDropsOmitted(t *testing.T) {
 	}
 
 	last := m.lastCall(t)
-	if last.method != "PATCH" || last.path != "/api/v1/crm/client/cust_001/" {
+	if last.method != "PATCH" || last.path != "/api/v1/crm/clients/cust_001/" {
 		t.Errorf("%s %s", last.method, last.path)
 	}
 	want := map[string]any{"notes": "vip"}
@@ -143,7 +150,7 @@ func TestClientsReplaceUsesPut(t *testing.T) {
 	}
 
 	last := m.lastCall(t)
-	if last.method != "PUT" || last.path != "/api/v1/crm/client/cust_001/" {
+	if last.method != "PUT" || last.path != "/api/v1/crm/clients/cust_001/" {
 		t.Errorf("%s %s", last.method, last.path)
 	}
 	want := map[string]any{
@@ -165,7 +172,7 @@ func TestClientsDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := m.lastCall(t)
-	if last.method != "DELETE" || last.path != "/api/v1/crm/client/cust_001/" {
+	if last.method != "DELETE" || last.path != "/api/v1/crm/clients/cust_001/" {
 		t.Errorf("%s %s", last.method, last.path)
 	}
 	if m.callCount() != 1 {
@@ -174,6 +181,8 @@ func TestClientsDelete(t *testing.T) {
 }
 
 func TestClientGroupsList(t *testing.T) {
+	// Back-compat lock: List() stays a bare []ClientGroup off the frozen
+	// singular route.
 	m := newMockAPI(t, always(jsonStub(200, []any{crmGroupResponse})))
 	c := newTestClient(t, m)
 
@@ -214,7 +223,7 @@ func TestClientGroupsCreateWithMembership(t *testing.T) {
 	}
 
 	last := m.lastCall(t)
-	if last.method != "POST" || last.path != "/api/v1/crm/group/" {
+	if last.method != "POST" || last.path != "/api/v1/crm/groups/" {
 		t.Errorf("%s %s", last.method, last.path)
 	}
 	want := map[string]any{
@@ -254,7 +263,7 @@ func TestClientGroupsRetrieve(t *testing.T) {
 		t.Errorf("Name = %q", group.Name)
 	}
 	last := m.lastCall(t)
-	if last.method != "GET" || last.path != "/api/v1/crm/group/7/" {
+	if last.method != "GET" || last.path != "/api/v1/crm/groups/7/" {
 		t.Errorf("%s %s", last.method, last.path)
 	}
 }
@@ -271,7 +280,7 @@ func TestClientGroupsUpdateMembership(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := m.lastCall(t)
-	if last.method != "PATCH" || last.path != "/api/v1/crm/group/7/" {
+	if last.method != "PATCH" || last.path != "/api/v1/crm/groups/7/" {
 		t.Errorf("%s %s", last.method, last.path)
 	}
 	want := map[string]any{
@@ -300,7 +309,7 @@ func TestClientGroupsReplaceAndDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	put := m.call(0)
-	if put.method != "PUT" || put.path != "/api/v1/crm/group/7/" {
+	if put.method != "PUT" || put.path != "/api/v1/crm/groups/7/" {
 		t.Errorf("%s %s", put.method, put.path)
 	}
 	want := map[string]any{"name": "VIP", "slug": "vip", "client_ids": []any{}}
@@ -312,7 +321,132 @@ func TestClientGroupsReplaceAndDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	del := m.lastCall(t)
-	if del.method != "DELETE" || del.path != "/api/v1/crm/group/7/" {
+	if del.method != "DELETE" || del.path != "/api/v1/crm/groups/7/" {
 		t.Errorf("%s %s", del.method, del.path)
+	}
+}
+
+// --- C2 canonical plural cursor list (ListPage) -----------------------------
+
+// TestClientsListPage exercises the new cursor-paginated ListPage against the
+// canonical plural /api/v1/crm/clients/ route.
+func TestClientsListPage(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(200, map[string]any{
+		"results":  []any{crmClientResponse},
+		"next":     nil,
+		"previous": nil,
+	})))
+	c := newTestClient(t, m)
+
+	page, err := c.Clients.ListPage(t.Context(), ClientListParams{Limit: Int(50)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Results) != 1 || page.Results[0].ClientID != "cust_001" {
+		t.Errorf("Results = %+v", page.Results)
+	}
+	if page.HasNextPage() {
+		t.Error("HasNextPage() = true on a single page")
+	}
+	last := m.lastCall(t)
+	if last.method != "GET" || last.path != "/api/v1/crm/clients/" {
+		t.Errorf("%s %s", last.method, last.path)
+	}
+	if last.query.Get("limit") != "50" {
+		t.Errorf("limit = %q, want 50", last.query.Get("limit"))
+	}
+}
+
+// TestClientGroupsListPage exercises the new cursor-paginated ListPage against
+// the canonical plural /api/v1/crm/groups/ route.
+func TestClientGroupsListPage(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(200, map[string]any{
+		"results":  []any{crmGroupResponse},
+		"next":     nil,
+		"previous": nil,
+	})))
+	c := newTestClient(t, m)
+
+	page, err := c.ClientGroups.ListPage(t.Context(), ClientGroupListParams{Cursor: String("c0")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Results) != 1 || page.Results[0].Slug != "vip" {
+		t.Errorf("Results = %+v", page.Results)
+	}
+	if len(page.Results[0].Clients) != 1 || page.Results[0].Clients[0].ClientID != "cust_001" {
+		t.Errorf("nested Clients = %+v", page.Results[0].Clients)
+	}
+	last := m.lastCall(t)
+	if last.method != "GET" || last.path != "/api/v1/crm/groups/" {
+		t.Errorf("%s %s", last.method, last.path)
+	}
+	if last.query.Get("cursor") != "c0" {
+		t.Errorf("cursor = %q, want c0", last.query.Get("cursor"))
+	}
+}
+
+// clientsTwoPageResponder serves page 1 (no cursor) then page 2 (cursor=pg2).
+// The advertised next URL points at a foreign host to prove it is never
+// followed directly — the SDK must re-request the configured base URL.
+func clientsTwoPageResponder(_ int, c call) stub {
+	profile := func(id string) map[string]any {
+		p := map[string]any{}
+		for k, v := range crmClientResponse {
+			p[k] = v
+		}
+		p["client_id"] = id
+		return p
+	}
+	switch c.query.Get("cursor") {
+	case "":
+		return jsonStub(200, map[string]any{
+			"results":  []any{profile("cust_001"), profile("cust_002")},
+			"next":     "https://internal-proxy.local" + clientsPath + "?cursor=pg2&limit=2",
+			"previous": nil,
+		})
+	case "pg2":
+		return jsonStub(200, map[string]any{
+			"results":  []any{profile("cust_003")},
+			"next":     nil,
+			"previous": "https://internal-proxy.local" + clientsPath + "?limit=2",
+		})
+	default:
+		return jsonStub(404, map[string]any{})
+	}
+}
+
+// TestClientsListPageWalksAllPages drains ListPage across two pages with the
+// lazy auto-pager and checks proxy-safe cursor re-request.
+func TestClientsListPageWalksAllPages(t *testing.T) {
+	m := newMockAPI(t, clientsTwoPageResponder)
+	c := newTestClient(t, m)
+
+	page, err := c.Clients.ListPage(t.Context(), ClientListParams{Limit: Int(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for cl, err := range page.All(t.Context()) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, cl.ClientID)
+	}
+	want := []string{"cust_001", "cust_002", "cust_003"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Errorf("ids = %v, want %v", ids, want)
+	}
+	if m.callCount() != 2 {
+		t.Errorf("calls = %d, want 2", m.callCount())
+	}
+	// Page 2 must be fetched against the configured base URL (not the foreign
+	// host in `next`), carrying the merged cursor + original limit.
+	last := m.lastCall(t)
+	if last.path != "/api/v1/crm/clients/" {
+		t.Errorf("path = %q, want the configured base URL path", last.path)
+	}
+	if last.query.Get("cursor") != "pg2" || last.query.Get("limit") != "2" {
+		t.Errorf("second request query = %v", last.query)
 	}
 }

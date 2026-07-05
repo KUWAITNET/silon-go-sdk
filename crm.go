@@ -7,11 +7,24 @@ import (
 )
 
 const (
-	clientsPath      = "/api/v1/crm/client/"
-	clientGroupsPath = "/api/v1/crm/group/"
+	// clientsPath is the CANONICAL plural CRM contacts route
+	// (/api/v1/crm/clients/) — cursor-paginated list plus CRUD.
+	clientsPath = "/api/v1/crm/clients/"
+	// clientsLegacyPath is the DEPRECATED singular route
+	// (/api/v1/crm/client/). Its list still returns a frozen bare JSON
+	// array; kept only so ClientsService.List stays source- and
+	// behavior-compatible.
+	clientsLegacyPath = "/api/v1/crm/client/"
+
+	// clientGroupsPath is the CANONICAL plural CRM groups route
+	// (/api/v1/crm/groups/) — cursor-paginated list plus CRUD.
+	clientGroupsPath = "/api/v1/crm/groups/"
+	// clientGroupsLegacyPath is the DEPRECATED singular route
+	// (/api/v1/crm/group/) whose list returns a frozen bare JSON array.
+	clientGroupsLegacyPath = "/api/v1/crm/group/"
 )
 
-// ClientProfile is a CRM contact (/api/v1/crm/client/).
+// ClientProfile is a CRM contact (/api/v1/crm/clients/).
 type ClientProfile struct {
 	// ClientID is your stable identifier for this contact — the value
 	// passed as to.client_id (or inside an audience) when sending a
@@ -38,7 +51,7 @@ type ClientProfile struct {
 	DefaultChannel string `json:"default_channel,omitempty"`
 }
 
-// ClientGroup is a CRM client group (/api/v1/crm/group/).
+// ClientGroup is a CRM client group (/api/v1/crm/groups/).
 type ClientGroup struct {
 	// ID is the server-assigned numeric id of the group.
 	ID int `json:"id"`
@@ -58,7 +71,7 @@ type ClientGroup struct {
 	Clients []ClientProfile `json:"clients,omitempty"`
 }
 
-// ClientsService manages CRM client profiles (/api/v1/crm/client/).
+// ClientsService manages CRM client profiles (/api/v1/crm/clients/).
 // Access it via Client.Clients.
 type ClientsService struct {
 	client *Client
@@ -106,6 +119,27 @@ func (f clientProfileFields) body() map[string]any {
 	return body
 }
 
+// ClientListParams paginate ClientsService.ListPage. Nil fields are
+// omitted from the query.
+type ClientListParams struct {
+	// Cursor resumes listing from an opaque pagination cursor.
+	Cursor *string
+
+	// Limit caps the page size (default 50, max 100).
+	Limit *int
+}
+
+func (p ClientListParams) values() url.Values {
+	q := url.Values{}
+	if p.Cursor != nil {
+		q.Set("cursor", *p.Cursor)
+	}
+	if p.Limit != nil {
+		q.Set("limit", strconv.Itoa(*p.Limit))
+	}
+	return q
+}
+
 // ClientCreateParams are the parameters for ClientsService.Create. Only
 // ClientID is required; nil fields are omitted from the request JSON.
 type ClientCreateParams struct {
@@ -140,17 +174,32 @@ func (p ClientUpdateParams) body() map[string]any {
 	return clientProfileFields(p).body()
 }
 
-// List fetches every CRM client (GET /api/v1/crm/client/ — the API
-// returns a bare JSON array, not a paginated envelope).
+// List fetches every CRM client in one request (GET /api/v1/crm/client/ —
+// the deprecated singular route, which returns a bare JSON array rather
+// than a paginated envelope).
+//
+// Deprecated: the singular list route is frozen for back-compat. Use
+// ListPage, which targets the canonical cursor-paginated /api/v1/crm/clients/
+// route and returns a *Page[ClientProfile] you can walk (or drain lazily
+// with Page.All). This List remains source- and behavior-compatible and is
+// not going away, but new code should prefer ListPage.
 func (s *ClientsService) List(ctx context.Context) ([]ClientProfile, error) {
 	var out []ClientProfile
-	if err := s.client.get(ctx, clientsPath, nil, &out); err != nil {
+	if err := s.client.get(ctx, clientsLegacyPath, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// Create adds a CRM client (POST /api/v1/crm/client/).
+// ListPage returns one cursor-paginated page of CRM clients, newest first
+// by registration_date (GET /api/v1/crm/clients/ — the canonical plural
+// route). Walk further pages with Page.NextPage, or drain them all lazily
+// with Page.All.
+func (s *ClientsService) ListPage(ctx context.Context, params ClientListParams) (*Page[ClientProfile], error) {
+	return fetchPage[ClientProfile](ctx, s.client, clientsPath, params.values())
+}
+
+// Create adds a CRM client (POST /api/v1/crm/clients/).
 func (s *ClientsService) Create(ctx context.Context, params ClientCreateParams) (*ClientProfile, error) {
 	body := clientProfileFields{
 		FirstName:       params.FirstName,
@@ -171,7 +220,7 @@ func (s *ClientsService) Create(ctx context.Context, params ClientCreateParams) 
 }
 
 // Retrieve fetches one CRM client by its client_id
-// (GET /api/v1/crm/client/{client_id}/).
+// (GET /api/v1/crm/clients/{client_id}/).
 func (s *ClientsService) Retrieve(ctx context.Context, clientID string) (*ClientProfile, error) {
 	var out ClientProfile
 	if err := s.client.get(ctx, clientsPath+url.PathEscape(clientID)+"/", nil, &out); err != nil {
@@ -181,7 +230,7 @@ func (s *ClientsService) Retrieve(ctx context.Context, clientID string) (*Client
 }
 
 // Update partially updates a CRM client
-// (PATCH /api/v1/crm/client/{client_id}/) — only non-nil fields change.
+// (PATCH /api/v1/crm/clients/{client_id}/) — only non-nil fields change.
 func (s *ClientsService) Update(ctx context.Context, clientID string, params ClientUpdateParams) (*ClientProfile, error) {
 	var out ClientProfile
 	if err := s.client.patch(ctx, clientsPath+url.PathEscape(clientID)+"/", params.body(), &out); err != nil {
@@ -191,7 +240,7 @@ func (s *ClientsService) Update(ctx context.Context, clientID string, params Cli
 }
 
 // Replace fully replaces a CRM client
-// (PUT /api/v1/crm/client/{client_id}/). The client_id itself is
+// (PUT /api/v1/crm/clients/{client_id}/). The client_id itself is
 // immutable; omitted fields are reset server-side.
 func (s *ClientsService) Replace(ctx context.Context, clientID string, params ClientUpdateParams) (*ClientProfile, error) {
 	var out ClientProfile
@@ -201,16 +250,37 @@ func (s *ClientsService) Replace(ctx context.Context, clientID string, params Cl
 	return &out, nil
 }
 
-// Delete removes a CRM client (DELETE /api/v1/crm/client/{client_id}/,
+// Delete removes a CRM client (DELETE /api/v1/crm/clients/{client_id}/,
 // 204 on success).
 func (s *ClientsService) Delete(ctx context.Context, clientID string) error {
 	return s.client.delete(ctx, clientsPath+url.PathEscape(clientID)+"/")
 }
 
-// ClientGroupsService manages CRM client groups (/api/v1/crm/group/).
+// ClientGroupsService manages CRM client groups (/api/v1/crm/groups/).
 // Access it via Client.ClientGroups.
 type ClientGroupsService struct {
 	client *Client
+}
+
+// ClientGroupListParams paginate ClientGroupsService.ListPage. Nil fields
+// are omitted from the query.
+type ClientGroupListParams struct {
+	// Cursor resumes listing from an opaque pagination cursor.
+	Cursor *string
+
+	// Limit caps the page size (default 50, max 100).
+	Limit *int
+}
+
+func (p ClientGroupListParams) values() url.Values {
+	q := url.Values{}
+	if p.Cursor != nil {
+		q.Set("cursor", *p.Cursor)
+	}
+	if p.Limit != nil {
+		q.Set("limit", strconv.Itoa(*p.Limit))
+	}
+	return q
 }
 
 // ClientGroupCreateParams are the parameters for
@@ -258,17 +328,31 @@ type ClientGroupReplaceParams struct {
 	IsActive *bool
 }
 
-// List fetches every client group (GET /api/v1/crm/group/ — the API
-// returns a bare JSON array, not a paginated envelope).
+// List fetches every client group in one request (GET /api/v1/crm/group/ —
+// the deprecated singular route, which returns a bare JSON array rather
+// than a paginated envelope).
+//
+// Deprecated: the singular list route is frozen for back-compat. Use
+// ListPage, which targets the canonical cursor-paginated /api/v1/crm/groups/
+// route and returns a *Page[ClientGroup] you can walk (or drain lazily with
+// Page.All). This List remains source- and behavior-compatible and is not
+// going away, but new code should prefer ListPage.
 func (s *ClientGroupsService) List(ctx context.Context) ([]ClientGroup, error) {
 	var out []ClientGroup
-	if err := s.client.get(ctx, clientGroupsPath, nil, &out); err != nil {
+	if err := s.client.get(ctx, clientGroupsLegacyPath, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// Create adds a client group (POST /api/v1/crm/group/).
+// ListPage returns one cursor-paginated page of client groups, newest
+// first by id (GET /api/v1/crm/groups/ — the canonical plural route). Walk
+// further pages with Page.NextPage, or drain them all lazily with Page.All.
+func (s *ClientGroupsService) ListPage(ctx context.Context, params ClientGroupListParams) (*Page[ClientGroup], error) {
+	return fetchPage[ClientGroup](ctx, s.client, clientGroupsPath, params.values())
+}
+
+// Create adds a client group (POST /api/v1/crm/groups/).
 func (s *ClientGroupsService) Create(ctx context.Context, params ClientGroupCreateParams) (*ClientGroup, error) {
 	body := map[string]any{"name": params.Name, "slug": params.Slug}
 	if params.ClientIDs != nil {
@@ -284,7 +368,7 @@ func (s *ClientGroupsService) Create(ctx context.Context, params ClientGroupCrea
 	return &out, nil
 }
 
-// Retrieve fetches one client group by id (GET /api/v1/crm/group/{id}/).
+// Retrieve fetches one client group by id (GET /api/v1/crm/groups/{id}/).
 func (s *ClientGroupsService) Retrieve(ctx context.Context, groupID int) (*ClientGroup, error) {
 	var out ClientGroup
 	if err := s.client.get(ctx, clientGroupsPath+strconv.Itoa(groupID)+"/", nil, &out); err != nil {
@@ -294,7 +378,7 @@ func (s *ClientGroupsService) Retrieve(ctx context.Context, groupID int) (*Clien
 }
 
 // Update partially updates a client group
-// (PATCH /api/v1/crm/group/{id}/). A non-nil ClientIDs replaces the whole
+// (PATCH /api/v1/crm/groups/{id}/). A non-nil ClientIDs replaces the whole
 // membership.
 func (s *ClientGroupsService) Update(ctx context.Context, groupID int, params ClientGroupUpdateParams) (*ClientGroup, error) {
 	body := map[string]any{}
@@ -317,7 +401,7 @@ func (s *ClientGroupsService) Update(ctx context.Context, groupID int, params Cl
 	return &out, nil
 }
 
-// Replace fully replaces a client group (PUT /api/v1/crm/group/{id}/).
+// Replace fully replaces a client group (PUT /api/v1/crm/groups/{id}/).
 func (s *ClientGroupsService) Replace(ctx context.Context, groupID int, params ClientGroupReplaceParams) (*ClientGroup, error) {
 	body := map[string]any{
 		"name":       params.Name,
@@ -337,7 +421,7 @@ func (s *ClientGroupsService) Replace(ctx context.Context, groupID int, params C
 	return &out, nil
 }
 
-// Delete removes a client group (DELETE /api/v1/crm/group/{id}/, 204 on
+// Delete removes a client group (DELETE /api/v1/crm/groups/{id}/, 204 on
 // success). Member client profiles are not deleted.
 func (s *ClientGroupsService) Delete(ctx context.Context, groupID int) error {
 	return s.client.delete(ctx, clientGroupsPath+strconv.Itoa(groupID)+"/")
