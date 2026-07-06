@@ -1,5 +1,7 @@
 # Silon Go SDK
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/KUWAITNET/silon-go-sdk.svg)](https://pkg.go.dev/github.com/KUWAITNET/silon-go-sdk)
+
 Go client for the [Silon](https://silon.tech) messaging platform API — send
 messages on any channel (WhatsApp, SMS, email, push, web push, voice), manage
 CRM contacts and groups, run bulk campaigns, maintain the do-not-contact

@@ -1,0 +1,52 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # required to create the GitHub Release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./... -count=1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      # Go has no central registry: "publishing" is this public repo + the
+      # semver tag. proxy.golang.org / pkg.go.dev index the module the first
+      # time anyone fetches it. This step nudges the proxy so the version and
+      # docs appear promptly — it only succeeds once the repo is public.
+      - name: Warm the Go module proxy
+        continue-on-error: true
+        run: |
+          WORK="$(mktemp -d)"
+          cd "$WORK"
+          go mod init warm >/dev/null
+          GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org \
+            go list -m "github.com/KUWAITNET/silon-go-sdk@${GITHUB_REF_NAME}" \
+            || echo "Proxy not populated yet — the repo must be public; it will index on first external fetch."
