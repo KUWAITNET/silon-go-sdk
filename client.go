@@ -11,7 +11,7 @@ import (
 )
 
 // Version is the SDK release version, reported in the User-Agent header.
-const Version = "0.1.0"
+const Version = "0.3.0"
 
 // DefaultTimeout is the request timeout applied to the internally created
 // HTTP client when WithTimeout / WithHTTPClient are not used.
