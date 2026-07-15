@@ -138,28 +138,3 @@ func TestAuthSignup(t *testing.T) {
 		t.Errorf("signup must not send an Idempotency-Key, got %q", key)
 	}
 }
-
-func TestAuthLoginDeprecatedButWorks(t *testing.T) {
-	m := newMockAPI(t, always(jsonStub(200, map[string]any{"token": "tok_123"})))
-	c := newTestClient(t, m)
-
-	result, err := c.Auth.Login(t.Context(), LoginParams{
-		Username: "sara@example.com",
-		Password: "pw",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Token != "tok_123" {
-		t.Errorf("Token = %q", result.Token)
-	}
-
-	last := m.lastCall(t)
-	if last.method != "POST" || last.path != "/api/v1/login/" {
-		t.Errorf("%s %s", last.method, last.path)
-	}
-	want := map[string]any{"username": "sara@example.com", "password": "pw"}
-	if got := last.jsonBody(t); !reflect.DeepEqual(got, want) {
-		t.Errorf("body = %v, want %v", got, want)
-	}
-}

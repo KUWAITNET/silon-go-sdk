@@ -7,7 +7,6 @@ import (
 const (
 	profilePath = "/api/v1/profile/"
 	signupPath  = "/api/v1/signup/"
-	loginPath   = "/api/v1/login/"
 )
 
 // UserProfile is the authenticated user's own profile — the body of
@@ -31,13 +30,6 @@ type UserProfile struct {
 
 	// ClientID is the linked contact profile's client_id (read-only).
 	ClientID string `json:"client_id,omitempty"`
-}
-
-// LoginResult is the body of the deprecated POST /api/v1/login/.
-type LoginResult struct {
-	// Token is a Bearer token — prefer a scoped sk_live_ API key
-	// instead.
-	Token string `json:"token"`
 }
 
 // ProfileService reads and updates the authenticated user's own profile
@@ -149,8 +141,7 @@ func (s *ProfileService) Replace(ctx context.Context, params ProfileReplaceParam
 	return &out, nil
 }
 
-// AuthService signs up users, and holds the deprecated password login.
-// Access it via Client.Auth.
+// AuthService signs up users. Access it via Client.Auth.
 type AuthService struct {
 	client *Client
 }
@@ -203,34 +194,11 @@ func (p SignupParams) body() map[string]any {
 	return body
 }
 
-// LoginParams are the parameters for the deprecated AuthService.Login.
-type LoginParams struct {
-	// Username is the account email.
-	Username string
-
-	// Password is the account password.
-	Password string
-}
-
 // Signup creates a new user account (POST /api/v1/signup/, 201 — the
 // body is the created profile; throttled server-side).
 func (s *AuthService) Signup(ctx context.Context, params SignupParams) (*UserProfile, error) {
 	var out UserProfile
 	if err := s.client.post(ctx, signupPath, params.body(), nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// Login exchanges a username + password for a Bearer token
-// (POST /api/v1/login/).
-//
-// Deprecated: prefer a scoped sk_live_ API key created in the dashboard
-// under Settings > API keys.
-func (s *AuthService) Login(ctx context.Context, params LoginParams) (*LoginResult, error) {
-	body := map[string]any{"username": params.Username, "password": params.Password}
-	var out LoginResult
-	if err := s.client.post(ctx, loginPath, body, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

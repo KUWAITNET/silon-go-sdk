@@ -152,7 +152,7 @@ type Client struct {
 	// Profile reads and updates the authenticated user's own profile.
 	Profile *ProfileService
 
-	// Auth signs up users, and holds the deprecated password login.
+	// Auth signs up users.
 	Auth *AuthService
 }
 

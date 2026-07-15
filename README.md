@@ -462,10 +462,10 @@ endpoint, err := client.WebhookEndpoints.Create(ctx, silon.WebhookEndpointCreate
 | `client.Events` | `List` (paginated), `Retrieve` |
 | `client.Push` | `SubscribeAndroid`, `SubscribeIOS`, `UpsertDevices`, `MarkRead`, `ListNotifications`, `SubscribeWeb` |
 | `client.Profile` | `Retrieve`, `Update`, `Replace` |
-| `client.Auth` | `Signup`, `Login` (deprecated) |
+| `client.Auth` | `Signup` |
 
 Deprecated operations (`Bulk.Send`, `Push.ListNotifications`,
-`Push.SubscribeWeb`, `Auth.Login`, `Clients.List`, `ClientGroups.List`)
+`Push.SubscribeWeb`, `Clients.List`, `ClientGroups.List`)
 carry Go's standard `// Deprecated:` doc-comment marker, which gopls and
 staticcheck surface at the call site. `Bulk.Send`'s successor for every
 shape is `Messages.SendBatch` (inline rows or a saved CSV via `File`);
@@ -695,8 +695,8 @@ rewrites hostnames can't send pagination to an unreachable internal host.
   reader (e.g. `*os.File`) → `recipients.csv`.
 - **`BulkSendParams.Files`** matches the wire field name for message
   attachments, where Python names the keyword `attachments`.
-- **Deprecated operations** (`Push.ListNotifications`, `Push.SubscribeWeb`,
-  `Auth.Login`) carry Go's standard `// Deprecated:` doc-comment marker
+- **Deprecated operations** (`Push.ListNotifications`, `Push.SubscribeWeb`)
+  carry Go's standard `// Deprecated:` doc-comment marker
   (surfaced by godoc/gopls/staticcheck) instead of Python's runtime
   `DeprecationWarning`.
 - **`Push.ListNotifications`** takes a typed `PushPlatform`
