@@ -210,6 +210,73 @@ func TestOTPVerifyWrongCodeExposesRemainingAttempts(t *testing.T) {
 	}
 }
 
+func TestOTPPurposesListsActiveConfigurations(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(200, map[string]any{
+		"results": []any{
+			map[string]any{
+				"name":        "login",
+				"channel":     "sms",
+				"description": "",
+				"code_length": 6,
+				"ttl_seconds": 300,
+			},
+			map[string]any{
+				"name":        "verify-wa",
+				"channel":     "whatsapp",
+				"description": "Operator OTP",
+				"code_length": 8,
+				"ttl_seconds": 600,
+			},
+		},
+	})))
+	c := newTestClient(t, m)
+
+	purposes, err := c.OTP.Purposes(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(purposes) != 2 || purposes[0].Name != "login" || purposes[1].Name != "verify-wa" {
+		t.Fatalf("purposes = %+v", purposes)
+	}
+	want := OTPPurpose{
+		Name:        "verify-wa",
+		Channel:     "whatsapp",
+		Description: "Operator OTP",
+		CodeLength:  8,
+		TTLSeconds:  600,
+	}
+	if purposes[1] != want {
+		t.Errorf("purposes[1] = %+v, want %+v", purposes[1], want)
+	}
+
+	last := m.lastCall(t)
+	if last.method != "GET" || last.path != "/api/v1/otp/purposes/" {
+		t.Errorf("%s %s", last.method, last.path)
+	}
+	if len(last.query) != 0 {
+		t.Errorf("query = %v, want none", last.query)
+	}
+	if got := last.header.Get("Idempotency-Key"); got != "" {
+		t.Errorf("purposes must not send an Idempotency-Key, got %q", got)
+	}
+}
+
+func TestOTPPurposesToleratesMissingResults(t *testing.T) {
+	m := newMockAPI(t, always(jsonStub(200, map[string]any{"unexpected": true})))
+	c := newTestClient(t, m)
+
+	purposes, err := c.OTP.Purposes(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if purposes == nil {
+		t.Fatal("purposes = nil, want an empty non-nil slice")
+	}
+	if len(purposes) != 0 {
+		t.Errorf("purposes = %+v, want empty", purposes)
+	}
+}
+
 func TestOTPVerifyExpiredIsGone(t *testing.T) {
 	m := newMockAPI(t, always(jsonStub(410, map[string]any{
 		"type":   "https://acme.silon.tech/docs/errors/otp-expired",

@@ -6,12 +6,13 @@ import (
 )
 
 const (
-	otpSendPath   = "/api/v1/otp/send/"
-	otpVerifyPath = "/api/v1/otp/verify/"
+	otpSendPath     = "/api/v1/otp/send/"
+	otpVerifyPath   = "/api/v1/otp/verify/"
+	otpPurposesPath = "/api/v1/otp/purposes/"
 )
 
-// OTPService sends and verifies one-time passwords. Access it via
-// Client.OTP.
+// OTPService sends and verifies one-time passwords and lists the
+// tenant's configured OTP purposes. Access it via Client.OTP.
 type OTPService struct {
 	client *Client
 }
@@ -80,6 +81,26 @@ type OTPVerifyResult struct {
 	VerifiedAt time.Time `json:"verified_at"`
 }
 
+// OTPPurpose is one entry of GET /api/v1/otp/purposes/ (an active
+// purpose configuration on the tenant).
+type OTPPurpose struct {
+	// Name is the identifier to pass as OTPSendParams.Purpose to
+	// OTPService.Send.
+	Name string `json:"name"`
+
+	// Channel is the delivery channel: "whatsapp" / "sms" / "email".
+	Channel string `json:"channel"`
+
+	// Description is a human-readable description; may be blank.
+	Description string `json:"description,omitempty"`
+
+	// CodeLength is the number of digits in the generated code.
+	CodeLength int `json:"code_length"`
+
+	// TTLSeconds is how long a code stays valid after dispatch.
+	TTLSeconds int `json:"ttl_seconds"`
+}
+
 // Send dispatches a one-time password (POST /api/v1/otp/send/, 202). The
 // recipient in params.To must contain exactly one of "client_id" /
 // "phone_number" / "email"; the delivery channel is decided by the
@@ -111,4 +132,22 @@ func (s *OTPService) Verify(ctx context.Context, params OTPVerifyParams) (*OTPVe
 		return nil, err
 	}
 	return &out, nil
+}
+
+// Purposes lists the tenant's active OTP purposes
+// (GET /api/v1/otp/purposes/). Each purpose carries the Name accepted by
+// OTPService.Send, its delivery Channel, CodeLength and TTLSeconds. The
+// list is small and bounded, so it is not cursor-paginated; servers
+// predating the endpoint return a 404 *APIError (IsNotFound).
+func (s *OTPService) Purposes(ctx context.Context) ([]OTPPurpose, error) {
+	var out struct {
+		Results []OTPPurpose `json:"results"`
+	}
+	if err := s.client.get(ctx, otpPurposesPath, nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Results == nil {
+		out.Results = []OTPPurpose{}
+	}
+	return out.Results, nil
 }
