@@ -239,3 +239,42 @@ func TestReportsBalance(t *testing.T) {
 		t.Errorf("request body = %q, want empty", last.body)
 	}
 }
+
+func TestReportsConversations(t *testing.T) {
+	response := map[string]any{
+		"group_by":       "agent",
+		"business_hours": false,
+		"totals":         map[string]any{"resolutions_count": 3, "csat_average": 4.5},
+		"rows":           []any{map[string]any{"key": 1, "name": "Sara", "resolutions_count": 3}},
+	}
+	m := newMockAPI(t, always(jsonStub(200, response)))
+	c := newTestClient(t, m)
+
+	report, err := c.Reports.Conversations(t.Context(), ConversationsReportParams{
+		GroupBy: String("agent"),
+		Compare: Bool(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := report.Totals["resolutions_count"]; !ok {
+		t.Errorf("Totals = %v, missing resolutions_count", report.Totals)
+	}
+	if len(report.Rows) != 1 || report.Rows[0]["name"] != "Sara" {
+		t.Errorf("Rows = %v", report.Rows)
+	}
+
+	last := m.lastCall(t)
+	if last.method != "GET" || last.path != "/api/v1/reports/conversations/" {
+		t.Errorf("%s %s", last.method, last.path)
+	}
+	if got := last.query.Get("group_by"); got != "agent" {
+		t.Errorf("group_by query param = %q, want %q", got, "agent")
+	}
+	if got := last.query.Get("compare"); got != "true" {
+		t.Errorf("compare query param = %q, want %q", got, "true")
+	}
+	if len(last.body) != 0 {
+		t.Errorf("request body = %q, want empty", last.body)
+	}
+}

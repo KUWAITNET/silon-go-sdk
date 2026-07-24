@@ -42,6 +42,45 @@ type ProviderBalance struct {
 	Balance string `json:"balance"`
 }
 
+// ConversationsReport is the body of
+// GET /api/v1/reports/conversations/ — support-desk metrics for Live
+// Desk conversations.
+//
+// First-response / resolution / reply times, CSAT, and open /
+// unassigned / unattended gauges, with an agent / channel / team /
+// label breakdown. Totals and Rows stay generic maps (columns vary by
+// GroupBy); PreviousTotals and Deltas are present only in compare mode.
+type ConversationsReport struct {
+	// GroupBy is the breakdown dimension: "agent", "channel", "team" or
+	// "label".
+	GroupBy string `json:"group_by"`
+
+	// BusinessHours reports whether times were measured against business
+	// hours only.
+	BusinessHours bool `json:"business_hours"`
+
+	// DateFrom / DateTo echo the requested report window, or nil when
+	// unbounded.
+	DateFrom *string `json:"date_from"`
+	DateTo   *string `json:"date_to"`
+
+	// Totals holds the aggregate metrics for the window. Columns vary by
+	// GroupBy, so it stays a generic map.
+	Totals map[string]any `json:"totals"`
+
+	// Rows holds one entry per group (agent/channel/team/label). Columns
+	// vary by GroupBy, so rows stay generic maps.
+	Rows []map[string]any `json:"rows"`
+
+	// PreviousTotals holds the prior-window aggregates, present only in
+	// compare mode (nil otherwise).
+	PreviousTotals map[string]any `json:"previous_totals,omitempty"`
+
+	// Deltas holds the change versus the prior window, present only in
+	// compare mode (nil otherwise).
+	Deltas map[string]any `json:"deltas,omitempty"`
+}
+
 // ReportsService runs activity reports and provider balance lookups
 // (/api/v1/reports/...). Access it via Client.Reports.
 type ReportsService struct {
@@ -308,6 +347,52 @@ type AWSUsageReportParams struct {
 	Page *int
 }
 
+// ConversationsReportParams are the parameters for
+// ReportsService.Conversations. All fields are optional; nil fields are
+// omitted from the query string (the request has no body).
+type ConversationsReportParams struct {
+	// DateFrom / DateTo bound the report window (ISO datetime).
+	DateFrom *string
+	DateTo   *string
+
+	// GroupBy is the breakdown dimension: "agent", "channel", "team" or
+	// "label".
+	GroupBy *string
+
+	// BusinessHours, when true, measures times against business hours
+	// only.
+	BusinessHours *bool
+
+	// Channels filters to a comma-separated list of channel slugs.
+	Channels *string
+
+	// Compare, when true, includes prior-window totals and deltas.
+	Compare *bool
+}
+
+func (p ConversationsReportParams) query() url.Values {
+	q := url.Values{}
+	if p.DateFrom != nil {
+		q.Set("date_from", *p.DateFrom)
+	}
+	if p.DateTo != nil {
+		q.Set("date_to", *p.DateTo)
+	}
+	if p.GroupBy != nil {
+		q.Set("group_by", *p.GroupBy)
+	}
+	if p.BusinessHours != nil {
+		q.Set("business_hours", strconv.FormatBool(*p.BusinessHours))
+	}
+	if p.Channels != nil {
+		q.Set("channels", *p.Channels)
+	}
+	if p.Compare != nil {
+		q.Set("compare", strconv.FormatBool(*p.Compare))
+	}
+	return q
+}
+
 func (s *ReportsService) report(ctx context.Context, path string, body map[string]any) (*Report, error) {
 	var out Report
 	if err := s.client.post(ctx, reportsBasePath+path, body, nil, &out); err != nil {
@@ -369,6 +454,19 @@ func (s *ReportsService) AWSUsage(ctx context.Context, params AWSUsageReportPara
 		path:   reportsBasePath + "/aws-usage-statistics/",
 		query:  q,
 	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Conversations runs the Live Desk conversations report
+// (GET /api/v1/reports/conversations/) — support-desk metrics with an
+// agent / channel / team / label breakdown. GroupBy is one of "agent",
+// "channel", "team" or "label". Parameters are sent as query string and
+// the request has no body.
+func (s *ReportsService) Conversations(ctx context.Context, params ConversationsReportParams) (*ConversationsReport, error) {
+	var out ConversationsReport
+	if err := s.client.get(ctx, reportsBasePath+"/conversations/", params.query(), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
